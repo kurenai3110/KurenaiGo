@@ -81,10 +81,6 @@ namespace
     };
     constexpr float kHintAlphas[kMaxHintMarkers] = { 0.85f, 0.70f, 0.55f };
 
-    // KurenaiEngineが内部で登録しているウィンドウクラス名(Core/Window.cpp参照)。
-    // KurenaiEngineBaseはHWNDを公開していないため、マウス座標変換(ScreenToClient)用に
-    // 自ウィンドウのHWNDを取得する手段としてFindWindowWで探す
-    const wchar_t* kEngineWindowClassName = L"KurenaiEngineWindowClass";
     const wchar_t* kWindowTitle = L"KurenaiGo";
 
     // 現在のウィンドウサイズから盤のレイアウト(中心・格子の一辺・目の間隔)を求める
@@ -359,10 +355,6 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         const TextureHandle blackStoneTexture = renderer.LoadTexture((assetsDir / L"stone_black.png").wstring(), true);
         const TextureHandle whiteStoneTexture = renderer.LoadTexture((assetsDir / L"stone_white.png").wstring(), true);
 
-        // KurenaiEngineBaseはHWNDを公開していないため、固定のウィンドウクラス名+タイトルで
-        // 自ウィンドウを検索する(コンストラクタ完了時点でウィンドウは既に生成済み)
-        const HWND windowHandle = FindWindowW(kEngineWindowClassName, kWindowTitle);
-
         GoBoard board(kBoardLines);
         KataGoClient kataGo;
         TurnState turnState = TurnState::EngineStarting;
@@ -386,11 +378,6 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             kataGoDir / L"katago_stderr.log",
             kBoardLines);
 
-        bool prevLButtonDown = false;
-        bool prevPassKeyDown = false;
-        bool prevResignKeyDown = false;
-        bool prevTerritoryKeyDown = false;
-        bool prevHintKeyDown = false;
         bool territoryOverlayEnabled = false;
         bool hintOverlayEnabled = false;
 
@@ -398,7 +385,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         {
             renderer.PumpEvents();
 
-            if (GetAsyncKeyState(VK_ESCAPE) & 0x8000)
+            if (renderer.WasKeyPressed(VK_ESCAPE))
             {
                 renderer.Close();
             }
@@ -413,46 +400,33 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 
             const BoardLayout layout = ComputeBoardLayout(width, height);
 
-            // マウス位置をワールド座標(原点は画面左下、Y-up)へ変換する
+            // マウス位置をワールド座標(原点は画面左下、Y-up)へ変換する。GetClientMousePosition()は
+            // Win32標準のクライアント座標(原点は左上、Y-down)を返すため、Yを反転する
             int hoverRow = -1;
             int hoverCol = -1;
             bool isHovering = false;
-            if (windowHandle)
+            if (renderer.IsMouseOverWindow())
             {
-                POINT cursor{};
-                GetCursorPos(&cursor);
-                ScreenToClient(windowHandle, &cursor);
+                const POINT cursor = renderer.GetClientMousePosition();
                 const float worldX = static_cast<float>(cursor.x);
                 const float worldY = static_cast<float>(height) - static_cast<float>(cursor.y);
                 isHovering = TryGetHoveredIntersection(layout, worldX, worldY, hoverRow, hoverCol) &&
                     board.At(hoverRow, hoverCol) == Stone::Empty;
             }
 
-            const bool lButtonDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-            const bool clicked = lButtonDown && !prevLButtonDown;
-            prevLButtonDown = lButtonDown;
+            const bool clicked = renderer.WasMouseButtonPressed(MouseButton::Left);
+            const bool passPressed = renderer.WasKeyPressed('P');
+            const bool resignPressed = renderer.WasKeyPressed('R');
 
-            const bool passKeyDown = (GetAsyncKeyState('P') & 0x8000) != 0;
-            const bool passPressed = passKeyDown && !prevPassKeyDown;
-            prevPassKeyDown = passKeyDown;
-
-            const bool resignKeyDown = (GetAsyncKeyState('R') & 0x8000) != 0;
-            const bool resignPressed = resignKeyDown && !prevResignKeyDown;
-            prevResignKeyDown = resignKeyDown;
-
-            const bool territoryKeyDown = (GetAsyncKeyState('T') & 0x8000) != 0;
-            if (territoryKeyDown && !prevTerritoryKeyDown)
+            if (renderer.WasKeyPressed('T'))
             {
                 territoryOverlayEnabled = !territoryOverlayEnabled;
             }
-            prevTerritoryKeyDown = territoryKeyDown;
 
-            const bool hintKeyDown = (GetAsyncKeyState('H') & 0x8000) != 0;
-            if (hintKeyDown && !prevHintKeyDown)
+            if (renderer.WasKeyPressed('H'))
             {
                 hintOverlayEnabled = !hintOverlayEnabled;
             }
-            prevHintKeyDown = hintKeyDown;
 
             // 解析結果のポーリング(HumanToMove遷移時にenterHumanToMove()から要求している)
             KataGoAnalysisResult polledAnalysis;

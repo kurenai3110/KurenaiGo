@@ -243,23 +243,38 @@ KataGoの<code>final_score</code>(7章)にスコアリングを委譲してい�
 </section>
 
 <section id="input">
-<h2>5. マウス入力</h2>
+<h2>5. マウス・キーボード入力</h2>
 <p>
-<code>docs/KurenaiEngine.html</code> 5章の通り、<code>KurenaiEngine2D</code>自体は入力を提供せず
-Win32 APIを直接使う設計です。ただし<code>KurenaiEngineBase</code>はHWNDを公開していないため、
-<code>ScreenToClient</code>で座標変換するための自ウィンドウHWNDが取得できません。KurenaiGoでは
-起動直後に一度だけ<code>FindWindowW(L"KurenaiEngineWindowClass", L"KurenaiGo")</code>で自ウィンドウを
-検索して補っています(<code>KurenaiEngineWindowClass</code>はエンジン内部で登録している固定の
-ウィンドウクラス名。<code>Core/Window.cpp</code>参照)。
+<code>KurenaiEngineBase</code>が公開するウィンドウスコープの入力API(<code>IsMouseOverWindow</code>・
+<code>WasMouseButtonPressed</code>・<code>WasKeyPressed</code>・<code>GetClientMousePosition</code>)を
+使っています。これらはウィンドウメッセージ(<code>WM_MOUSEMOVE</code>/<code>WM_LBUTTONDOWN</code>/
+<code>WM_KEYDOWN</code>等)から状態を更新するため、<code>GetAsyncKeyState</code>/<code>GetCursorPos</code>と
+異なりウィンドウがフォーカスを失っていれば反応しません。かつて必要だった、自ウィンドウのHWNDを
+<code>FindWindowW(L"KurenaiEngineWindowClass", ...)</code>で検索する回避策も、<code>GetWindowHandle</code>を
+含むこれらのAPIが揃ったことで不要になりました。
 </p>
 <p>
-毎フレーム<code>GetCursorPos</code>→<code>ScreenToClient</code>でクライアント座標(原点は左上、
-Y-down)を取得し、<code>height - clientY</code>でワールド座標(原点は左下、Y-up)に変換します。
-最も近い交点との距離が<code>LineSpacing</code>の40%以内であればその交点を「ホバー中」とみなします
+<code>GetClientMousePosition()</code>はWin32標準のクライアント座標(原点は左上、Y-down)を返すため、
+<code>height - clientY</code>でワールド座標(原点は左下、Y-up)に変換します。最も近い交点との距離が
+<code>LineSpacing</code>の40%以内であればその交点を「ホバー中」とみなします
 (<code>TryGetHoveredIntersection</code>)。クリック・パス・投了・地合い表示切替(<code>T</code>)・
-着手ヒント表示切替(<code>H</code>)はいずれも<code>GetAsyncKeyState</code>の状態を前フレームと
-比較した立ち上がりエッジで検出しており、キー/ボタンを押し続けても1回しか発火しません。
+着手ヒント表示切替(<code>H</code>)は<code>WasMouseButtonPressed</code>/<code>WasKeyPressed</code>が
+すでに「直前の<code>PumpEvents()</code>呼び出し中に押された」立ち上がりエッジを返すため、
+KurenaiGo側で前フレームとの比較を自前実装する必要はありません。
 </p>
+<div class="note">
+<p>
+<strong>自動検証時の注意</strong>: <code>IsMouseOverWindow</code>は内部で<code>TrackMouseEvent</code>
+(<code>TME_LEAVE</code>)を使っており、これは実際のカーソル位置も見ています。<code>PostMessage</code>で
+<code>WM_MOUSEMOVE</code>を送ってウィンドウ内へカーソルがあるように見せかけても、実カーソルが
+ウィンドウ外にあると直後に<code>WM_MOUSELEAVE</code>が発生し<code>IsMouseOverWindow</code>が
+falseに戻ってしまう(ホバー判定だけが効かなくなる)ことを実機検証で確認しました。ホバー判定を
+含めてPostMessageで動作確認したい場合は、実カーソルも対象ウィンドウのクライアント領域内に
+置いた状態で行う必要があります。ボタン押下・キー入力自体(<code>WasMouseButtonPressed</code>/
+<code>WasKeyPressed</code>)はこの制約を受けず、実カーソル位置に関係なく<code>PostMessage</code>/
+<code>SendMessage</code>だけで正しく検証できます。
+</p>
+</div>
 </section>
 
 <section id="flow">
