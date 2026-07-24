@@ -12,10 +12,14 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
+#include <ctime>
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -24,6 +28,7 @@
 #include "KurenaiEngine2D.h"
 #include "KurenaiTypes.h"
 #include "PathUtil.h"
+#include "Sgf.h"
 
 using namespace Kurenai;
 using namespace KurenaiGo;
@@ -393,6 +398,43 @@ namespace
         renderer.DrawText(hudX, hudY, BuildStatusText(turnState, board), kHudFontSize,
             kHudColorR, kHudColorG, kHudColorB, 1.0f);
     }
+
+    // 現在時刻から"game_YYYYMMDD_HHMMSS.sgf"形式のファイル名を組み立てる
+    std::wstring BuildGameFileName(std::chrono::system_clock::time_point when)
+    {
+        const std::time_t time = std::chrono::system_clock::to_time_t(when);
+        std::tm localTime{};
+        localtime_s(&localTime, &time);
+
+        std::wostringstream name;
+        name << L"game_" << std::put_time(&localTime, L"%Y%m%d_%H%M%S") << L".sgf";
+        return name.str();
+    }
+
+    // 対局の記録をSGFへ保存する。棋譜保存は対局結果の表示を妨げない補助機能のため、
+    // 失敗しても例外は投げずerror.logに記録するのみとする
+    void SaveGameRecordSafely(const std::filesystem::path& gamesDir, const std::vector<SgfMove>& moves,
+        const std::string& result)
+    {
+        try
+        {
+            std::filesystem::create_directories(gamesDir);
+
+            SgfGameRecord record;
+            record.BoardSize = kBoardLines;
+            record.Komi = kKomi;
+            record.Result = result;
+            record.Moves = moves;
+
+            const std::filesystem::path path = gamesDir / BuildGameFileName(std::chrono::system_clock::now());
+            WriteSgfFile(path, record);
+        }
+        catch (const std::exception& e)
+        {
+            std::ofstream log("error.log", std::ios::app);
+            log << "SGFの保存に失敗しました: " << e.what() << std::endl;
+        }
+    }
 }
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
@@ -405,6 +447,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     {
         const std::filesystem::path kataGoDir = ResolveAppDataPath(L"KataGo");
         const std::filesystem::path soundsDir = ResolveAppDataPath(L"Assets/Sounds");
+        const std::filesystem::path gamesDir = ResolveAppDataPath(L"Games");
 
         KurenaiEngine2D renderer(kWindowTitle, kWindowWidth, kWindowHeight, GraphicsAPI::DX11);
 
@@ -415,6 +458,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         GoBoard board(kBoardLines);
         KataGoClient kataGo;
         TurnState turnState = TurnState::EngineStarting;
+
+        // 対局中の着手・パスの記録。対局終了時にSGFへ保存する
+        std::vector<SgfMove> moveHistory;
 
         // 解析(kata-analyze)の最新結果。勝率表示・地合い可視化・着手ヒントが共通で使う
         KataGoAnalysisResult latestAnalysis;
@@ -510,6 +556,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 if (resignPressed)
                 {
                     renderer.PlaySound(gameEndSound);
+                    SaveGameRecordSafely(gamesDir, moveHistory, "W+R");
                     ShowMessageBoxUtf8("投了しました。KataGoの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
                     turnState = TurnState::GameOver;
                 }
@@ -517,6 +564,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 {
                     board.Pass();
                     kataGo.PlayPass(Stone::Black);
+                    moveHistory.push_back({ Stone::Black, true, -1, -1 });
                     if (board.ConsecutivePasses() >= 2)
                     {
                         kataGo.RequestFinalScore();
@@ -534,6 +582,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     {
                         renderer.PlaySound(stonePlaceSound);
                         kataGo.PlayMove(Stone::Black, hoverRow, hoverCol);
+                        moveHistory.push_back({ Stone::Black, false, hoverRow, hoverCol });
                         kataGo.RequestGenMove(Stone::White);
                         turnState = TurnState::AIThinking;
                     }
@@ -555,12 +604,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     else if (result.IsResign)
                     {
                         renderer.PlaySound(gameEndSound);
+                        SaveGameRecordSafely(gamesDir, moveHistory, "B+R");
                         ShowMessageBoxUtf8("KataGoが投了しました。あなたの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
                         turnState = TurnState::GameOver;
                     }
                     else if (result.IsPass)
                     {
                         board.Pass();
+                        moveHistory.push_back({ Stone::White, true, -1, -1 });
                         if (board.ConsecutivePasses() >= 2)
                         {
                             kataGo.RequestFinalScore();
@@ -581,6 +632,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     else
                     {
                         renderer.PlaySound(stonePlaceSound);
+                        moveHistory.push_back({ Stone::White, false, result.Row, result.Col });
                         enterHumanToMove();
                     }
                 }
@@ -593,6 +645,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 if (kataGo.TryGetFinalScore(score))
                 {
                     renderer.PlaySound(gameEndSound);
+                    SaveGameRecordSafely(gamesDir, moveHistory, score);
                     const std::string message = "対局終了\n結果: " + score;
                     ShowMessageBoxUtf8(message, "KurenaiGo - 対局終了", MB_OK | MB_ICONINFORMATION);
                     turnState = TurnState::GameOver;

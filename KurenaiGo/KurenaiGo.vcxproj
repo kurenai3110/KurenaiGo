@@ -115,11 +115,13 @@ if not exist "$(OutDir)KataGo" mkdir "$(OutDir)KataGo"</Command>
     <ClCompile Include="Source\GoBoard.cpp" />
     <ClCompile Include="Source\KataGoClient.cpp" />
     <ClCompile Include="Source\PathUtil.cpp" />
+    <ClCompile Include="Source\Sgf.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\GoBoard.h" />
     <ClInclude Include="Source\KataGoClient.h" />
     <ClInclude Include="Source\PathUtil.h" />
+    <ClInclude Include="Source\Sgf.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\KurenaiEngine\KurenaiEngine\KurenaiEngine.vcxproj">

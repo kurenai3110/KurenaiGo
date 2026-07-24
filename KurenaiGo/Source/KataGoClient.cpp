@@ -264,7 +264,7 @@ namespace KurenaiGo
                 LaunchProcess(exePath, modelPath, configPath, stderrLogPath);
                 Exchange("boardsize " + std::to_string(boardSize));
                 Exchange("clear_board");
-                Exchange("komi 7.5");
+                Exchange("komi " + std::to_string(kKomi));
                 Exchange("time_settings 0 5 1");
             }
             catch (const std::exception& e)

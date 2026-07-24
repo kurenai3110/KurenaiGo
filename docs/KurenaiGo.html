@@ -136,7 +136,8 @@
     <li><a href="#flow">6. 対局の進行(状態遷移)</a></li>
     <li><a href="#katago">7. KataGo連携(KataGoClient)</a></li>
     <li><a href="#analysis">8. 解析結果の可視化(勝率・地合い・着手ヒント)</a></li>
-    <li><a href="#future">9. 今後の課題</a></li>
+    <li><a href="#sgf">9. 棋譜の保存(SGF)</a></li>
+    <li><a href="#future">10. 今後の課題</a></li>
   </ol>
 </nav>
 
@@ -148,8 +149,9 @@
 19路盤の表示、マウスでの着手、合法手判定・捕獲・シンプルコウを含むルール、そして
 <a href="https://github.com/lightvector/katago">KataGo</a>をGTP(Go Text Protocol)経由の
 子プロセスとして起動しての対局(人間=黒、KataGo=白)までを実装しています。あわせて、
-<code>kata-analyze</code>による局面解析を使った勝率表示・地合い可視化・着手ヒント(8章)も
-実装済みです。色の選択・ハンディキャップ・対局のリスタートは未実装です(9章参照)。
+<code>kata-analyze</code>による局面解析を使った勝率表示・地合い可視化・着手ヒント(8章)、
+対局終了時の棋譜(SGF)自動保存(9章)も実装済みです。棋譜の読み込み・再生、色の選択・
+ハンディキャップ・対局のリスタートは未実装です(10章参照)。
 </p>
 </section>
 
@@ -422,14 +424,42 @@ scoreLead S ... order K ... pv ... [次のinfo move...] ownership &lt;361個の�
 </table>
 </section>
 
+<section id="sgf">
+<h2>9. 棋譜の保存(SGF)</h2>
+<p>
+<code>KurenaiGo::Sgf</code>(<code>Source/Sgf.h/.cpp</code>)は、対局の記録をSGF
+(Smart Game Format)として書き出す・読み込む機能を提供します。分岐(variation)の無い
+単一手順のみを扱う最小限のサブセットで、自分自身が書き出したSGFを読み戻せることを
+目的としています。
+</p>
+<h3>9.1 座標変換</h3>
+<p>
+SGFの座標は列→行の順でa〜s(0〜18)、行は盤面<strong>上端</strong>が0です。KurenaiGoの内部座標
+(<code>row=0</code>が盤面下端)との変換は<code>sgfRow = (Size-1) - row</code>で、8.1節で
+説明した<code>kata-analyze</code>のownership配列と同じ変換則を再利用しています。パスは
+<code>B[]</code>/<code>W[]</code>(空値)で表します。
+</p>
+<h3>9.2 保存の流れ</h3>
+<p>
+<code>Main.cpp</code>は対局中、黒白どちらの着手・パスも<code>std::vector&lt;SgfMove&gt;</code>
+(<code>moveHistory</code>)へ記録します。対局終了(自分の投了・KataGoの投了・
+<code>final_score</code>による終局のいずれか)の時点で、結果文字列
+(自分の投了→<code>"W+R"</code>、KataGoの投了→<code>"B+R"</code>、終局→<code>final_score</code>の
+応答をそのまま使用)とともに<code>Games\</code>フォルダ(実行ファイルと同じ場所、
+<code>ResolveAppDataPath(L"Games")</code>)へ、タイムスタンプ付きファイル名
+(<code>game_YYYYMMDD_HHMMSS.sgf</code>)で保存します。棋譜保存は対局結果の表示を妨げない
+補助機能のため、失敗しても例外は投げず<code>error.log</code>に記録するのみです。
+</p>
+</section>
+
 <section id="future">
-<h2>9. 今後の課題</h2>
+<h2>10. 今後の課題</h2>
 <ul>
 <li>色の選択(現在は人間=黒固定)・ハンディキャップ対局</li>
 <li>対局のリスタート(現在はアプリの再起動が必要)</li>
-<li>勝率・目差の数値表示(現状は面積比の横棒のみ。文字描画にはビットマップフォント等の
-自前実装、またはKurenaiEngine2DへのImGui等の統合が必要)</li>
-<li>棋譜の保存・読み込み(SGF)、対局後の解析(損失グラフ等)</li>
+<li>棋譜の読み込み・再生(現状は保存のみ)</li>
+<li>再生中の解析表示(勝率・目差の数値表示)・損失グラフ</li>
+<li>過去の複数対局から選んで読み込む機能</li>
 </ul>
 </section>
 

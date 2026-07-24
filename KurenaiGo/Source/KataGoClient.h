@@ -13,6 +13,9 @@
 
 namespace KurenaiGo
 {
+    // 対局のコミ。KataGoへの komi コマンドとSGF書き出し(KM プロパティ)の両方で使う唯一の値
+    constexpr float kKomi = 7.5f;
+
     // genmove の非同期結果
     struct KataGoMoveResult
     {
