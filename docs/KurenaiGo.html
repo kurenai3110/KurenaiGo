@@ -136,7 +136,7 @@
     <li><a href="#flow">6. 対局の進行(状態遷移)</a></li>
     <li><a href="#katago">7. KataGo連携(KataGoClient)</a></li>
     <li><a href="#analysis">8. 解析結果の可視化(勝率・地合い・着手ヒント)</a></li>
-    <li><a href="#sgf">9. 棋譜の保存(SGF)</a></li>
+    <li><a href="#sgf">9. 棋譜の保存・再生(SGF)</a></li>
     <li><a href="#future">10. 今後の課題</a></li>
   </ol>
 </nav>
@@ -150,8 +150,8 @@
 <a href="https://github.com/lightvector/katago">KataGo</a>をGTP(Go Text Protocol)経由の
 子プロセスとして起動しての対局(人間=黒、KataGo=白)までを実装しています。あわせて、
 <code>kata-analyze</code>による局面解析を使った勝率表示・地合い可視化・着手ヒント(8章)、
-対局終了時の棋譜(SGF)自動保存(9章)も実装済みです。棋譜の読み込み・再生、色の選択・
-ハンディキャップ・対局のリスタートは未実装です(10章参照)。
+棋譜(SGF)の自動保存・再生(9章)も実装済みです。色の選択・ハンディキャップ・
+対局のリスタートは未実装です(10章参照)。
 </p>
 </section>
 
@@ -297,7 +297,8 @@ falseに戻ってしまう(ホバー判定だけが効かなくなる)ことを�
 <tr><td><code>HumanToMove</code></td><td>黒(人間)の手番。クリック/<code>P</code>/<code>R</code>を受け付ける</td></tr>
 <tr><td><code>AIThinking</code></td><td>白(KataGo)の<code>genmove</code>応答待ち。<code>TryGetGenMoveResult</code>をポーリング</td></tr>
 <tr><td><code>WaitingForScore</code></td><td>両者パス後、<code>final_score</code>応答待ち</td></tr>
-<tr><td><code>GameOver</code></td><td>対局終了。入力を受け付けず盤面のみ表示し続ける</td></tr>
+<tr><td><code>GameOver</code></td><td>対局終了。<code>V</code>キーで棋譜再生(<code>Reviewing</code>)へ移れる(9.3節参照)</td></tr>
+<tr><td><code>Reviewing</code></td><td>棋譜再生中。<code>→</code>/<code>←</code>キーで手を進め戻しする</td></tr>
 </tbody>
 </table>
 <p>
@@ -425,7 +426,7 @@ scoreLead S ... order K ... pv ... [次のinfo move...] ownership &lt;361個の�
 </section>
 
 <section id="sgf">
-<h2>9. 棋譜の保存(SGF)</h2>
+<h2>9. 棋譜の保存・再生(SGF)</h2>
 <p>
 <code>KurenaiGo::Sgf</code>(<code>Source/Sgf.h/.cpp</code>)は、対局の記録をSGF
 (Smart Game Format)として書き出す・読み込む機能を提供します。分岐(variation)の無い
@@ -448,7 +449,25 @@ SGFの座標は列→行の順でa〜s(0〜18)、行は盤面<strong>上端</str
 応答をそのまま使用)とともに<code>Games\</code>フォルダ(実行ファイルと同じ場所、
 <code>ResolveAppDataPath(L"Games")</code>)へ、タイムスタンプ付きファイル名
 (<code>game_YYYYMMDD_HHMMSS.sgf</code>)で保存します。棋譜保存は対局結果の表示を妨げない
-補助機能のため、失敗しても例外は投げず<code>error.log</code>に記録するのみです。
+補助機能のため、失敗しても例外は投げず<code>error.log</code>に記録するのみです。保存先パスは
+<code>lastSavedGamePath</code>として保持し、9.3節の棋譜再生で読み直すのに使います。
+</p>
+<h3>9.3 棋譜再生(Reviewing)</h3>
+<p>
+<code>TurnState::Reviewing</code>という状態を追加し、対局終了(<code>GameOver</code>)後に
+<code>V</code>キーを押すと<code>lastSavedGamePath</code>を<code>ReadSgfFile</code>で読み直して
+遷移します(メモリ上の<code>moveHistory</code>を使い回さず、実際にファイルから読み直すことで
+読み込み機能そのものを検証しています)。再生中は<code>reviewMoveIndex</code>(現在何手目まで
+進めたか)を持ち、<code>→</code>/<code>←</code>キーで<code>[0, 総手数]</code>の範囲を前後します。
+</p>
+<p>
+<code>GoBoard</code>には手を戻す操作が無いため、<code>reviewMoveIndex</code>が変化するたびに
+空の<code>GoBoard</code>を新しく作り、0手目から<code>reviewMoveIndex</code>手目の直前まで
+<code>TryPlay</code>/<code>Pass</code>を再生し直して盤面を再構築します(<code>ReplayMoves</code>)。
+19路・数百手程度の対局であれば、ナビゲーションのたびに毎回再生し直すコストは無視できるため、
+差分更新は行っていません。再生中は直前の対局のkata-analyze結果を持ち越さないよう
+<code>hasAnalysis</code>を<code>false</code>にしてから遷移するため、勝率バー・地合い・
+着手ヒントは表示されません(解析付き再生は今後の課題)。
 </p>
 </section>
 
@@ -457,9 +476,8 @@ SGFの座標は列→行の順でa〜s(0〜18)、行は盤面<strong>上端</str
 <ul>
 <li>色の選択(現在は人間=黒固定)・ハンディキャップ対局</li>
 <li>対局のリスタート(現在はアプリの再起動が必要)</li>
-<li>棋譜の読み込み・再生(現状は保存のみ)</li>
 <li>再生中の解析表示(勝率・目差の数値表示)・損失グラフ</li>
-<li>過去の複数対局から選んで読み込む機能</li>
+<li>過去の複数対局から選んで読み込む機能(現状は直前の対局のみ)</li>
 </ul>
 </section>
 

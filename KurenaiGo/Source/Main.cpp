@@ -4,7 +4,8 @@
 // 座標系はワールド=ピクセル座標(原点は画面左下、Y-up)。
 //
 // 操作: 交点クリックで着手 / Pキーでパス / Rキーで投了 / Tキーで地合い表示切替 /
-//       Hキーで着手ヒント表示切替 / Escで終了
+//       Hキーで着手ヒント表示切替 / 対局終了後Vキーで棋譜再生 / 再生中は←→キーで手を戻す・進める /
+//       Escで終了
 
 #include <Windows.h>
 
@@ -369,11 +370,14 @@ namespace
         HumanToMove,     // 黒(人間)の手番
         AIThinking,      // 白(KataGo)がgenmove応答待ち
         WaitingForScore, // 両者パス後、final_score応答待ち
-        GameOver,
+        GameOver,        // 対局終了。Vキーで直前の対局の棋譜再生(Reviewing)へ移れる
+        Reviewing,       // 棋譜再生中。矢印キーで手を進め戻しする
     };
 
-    // 盤下のHUDに表示する手番状態・アゲハマ数のテキストを組み立てる
-    std::wstring BuildStatusText(TurnState turnState, const GoBoard& board)
+    // 盤下のHUDに表示する手番状態・アゲハマ数のテキストを組み立てる。reviewMoveIndex/
+    // reviewTotalMoves/reviewResultはturnState==Reviewingの場合のみ使う
+    std::wstring BuildStatusText(TurnState turnState, const GoBoard& board,
+        int reviewMoveIndex, int reviewTotalMoves, const std::string& reviewResult)
     {
         std::wstring text;
         switch (turnState)
@@ -382,7 +386,15 @@ namespace
         case TurnState::HumanToMove:     text = L"あなたの番です(黒)"; break;
         case TurnState::AIThinking:      text = L"KataGo思考中..."; break;
         case TurnState::WaitingForScore: text = L"終局判定中..."; break;
-        case TurnState::GameOver:        text = L"対局終了"; break;
+        case TurnState::GameOver:        text = L"対局終了(Vキーで棋譜再生)"; break;
+        case TurnState::Reviewing:
+            text = L"棋譜再生中 (手 " + std::to_wstring(reviewMoveIndex) + L"/" +
+                std::to_wstring(reviewTotalMoves) + L")";
+            if (reviewMoveIndex == reviewTotalMoves && !reviewResult.empty())
+            {
+                text += L"  結果: " + Utf8ToWide(reviewResult);
+            }
+            break;
         }
         text += L"   アゲハマ 黒:" + std::to_wstring(board.CapturesBy(Stone::Black)) +
             L" 白:" + std::to_wstring(board.CapturesBy(Stone::White));
@@ -390,13 +402,15 @@ namespace
     }
 
     // 盤の下マージンにHUDテキストを描画する
-    void DrawHud(KurenaiEngine2D& renderer, const BoardLayout& layout, TurnState turnState, const GoBoard& board)
+    void DrawHud(KurenaiEngine2D& renderer, const BoardLayout& layout, TurnState turnState, const GoBoard& board,
+        int reviewMoveIndex, int reviewTotalMoves, const std::string& reviewResult)
     {
         const float hudX = layout.CenterX - layout.GridExtent * 0.5f;
         const float bottomMarginCenterY = (layout.CenterY - layout.BoardExtent * 0.5f) * 0.5f;
         const float hudY = bottomMarginCenterY - kHudFontSize * 0.5f;
-        renderer.DrawText(hudX, hudY, BuildStatusText(turnState, board), kHudFontSize,
-            kHudColorR, kHudColorG, kHudColorB, 1.0f);
+        renderer.DrawText(hudX, hudY,
+            BuildStatusText(turnState, board, reviewMoveIndex, reviewTotalMoves, reviewResult),
+            kHudFontSize, kHudColorR, kHudColorG, kHudColorB, 1.0f);
     }
 
     // 現在時刻から"game_YYYYMMDD_HHMMSS.sgf"形式のファイル名を組み立てる
@@ -412,9 +426,10 @@ namespace
     }
 
     // 対局の記録をSGFへ保存する。棋譜保存は対局結果の表示を妨げない補助機能のため、
-    // 失敗しても例外は投げずerror.logに記録するのみとする
-    void SaveGameRecordSafely(const std::filesystem::path& gamesDir, const std::vector<SgfMove>& moves,
-        const std::string& result)
+    // 失敗しても例外は投げずerror.logに記録するのみとする。戻り値は保存先パス
+    // (棋譜再生で読み直すために使う)。失敗時は空のパスを返す
+    std::filesystem::path SaveGameRecordSafely(const std::filesystem::path& gamesDir,
+        const std::vector<SgfMove>& moves, const std::string& result)
     {
         try
         {
@@ -428,12 +443,33 @@ namespace
 
             const std::filesystem::path path = gamesDir / BuildGameFileName(std::chrono::system_clock::now());
             WriteSgfFile(path, record);
+            return path;
         }
         catch (const std::exception& e)
         {
             std::ofstream log("error.log", std::ios::app);
             log << "SGFの保存に失敗しました: " << e.what() << std::endl;
+            return {};
         }
+    }
+
+    // reviewMoveIndex手目までを空盤面から再生し、再生用盤面を作り直す
+    GoBoard ReplayMoves(const std::vector<SgfMove>& moves, int upToIndex, int boardSize)
+    {
+        GoBoard replayBoard(boardSize);
+        for (int i = 0; i < upToIndex; ++i)
+        {
+            const SgfMove& move = moves[static_cast<size_t>(i)];
+            if (move.IsPass)
+            {
+                replayBoard.Pass();
+            }
+            else
+            {
+                replayBoard.TryPlay(move.Row, move.Col, move.Color);
+            }
+        }
+        return replayBoard;
     }
 }
 
@@ -461,6 +497,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 
         // 対局中の着手・パスの記録。対局終了時にSGFへ保存する
         std::vector<SgfMove> moveHistory;
+        // 直近の対局終了時にSGFを保存したパス。GameOver中にVキーを押すとこれを読み込んで再生する
+        std::filesystem::path lastSavedGamePath;
+
+        // 棋譜再生(Reviewing)の状態
+        SgfGameRecord reviewRecord;
+        int reviewMoveIndex = 0;
+        GoBoard reviewBoard(kBoardLines);
 
         // 解析(kata-analyze)の最新結果。勝率表示・地合い可視化・着手ヒントが共通で使う
         KataGoAnalysisResult latestAnalysis;
@@ -556,7 +599,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 if (resignPressed)
                 {
                     renderer.PlaySound(gameEndSound);
-                    SaveGameRecordSafely(gamesDir, moveHistory, "W+R");
+                    lastSavedGamePath = SaveGameRecordSafely(gamesDir, moveHistory, "W+R");
                     ShowMessageBoxUtf8("投了しました。KataGoの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
                     turnState = TurnState::GameOver;
                 }
@@ -604,7 +647,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     else if (result.IsResign)
                     {
                         renderer.PlaySound(gameEndSound);
-                        SaveGameRecordSafely(gamesDir, moveHistory, "B+R");
+                        lastSavedGamePath = SaveGameRecordSafely(gamesDir, moveHistory, "B+R");
                         ShowMessageBoxUtf8("KataGoが投了しました。あなたの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
                         turnState = TurnState::GameOver;
                     }
@@ -645,7 +688,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 if (kataGo.TryGetFinalScore(score))
                 {
                     renderer.PlaySound(gameEndSound);
-                    SaveGameRecordSafely(gamesDir, moveHistory, score);
+                    lastSavedGamePath = SaveGameRecordSafely(gamesDir, moveHistory, score);
                     const std::string message = "対局終了\n結果: " + score;
                     ShowMessageBoxUtf8(message, "KurenaiGo - 対局終了", MB_OK | MB_ICONINFORMATION);
                     turnState = TurnState::GameOver;
@@ -654,16 +697,55 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             }
 
             case TurnState::GameOver:
+                if (renderer.WasKeyPressed('V') && !lastSavedGamePath.empty())
+                {
+                    try
+                    {
+                        reviewRecord = ReadSgfFile(lastSavedGamePath);
+                        reviewMoveIndex = 0;
+                        reviewBoard = GoBoard(kBoardLines);
+                        hasAnalysis = false; // 直前の対局の解析結果を棋譜再生画面に持ち越さない
+                        turnState = TurnState::Reviewing;
+                    }
+                    catch (const std::exception& e)
+                    {
+                        std::ofstream log("error.log", std::ios::app);
+                        log << "棋譜の読み込みに失敗しました: " << e.what() << std::endl;
+                    }
+                }
+                break;
+
+            case TurnState::Reviewing:
+            {
+                const int totalMoves = static_cast<int>(reviewRecord.Moves.size());
+                bool indexChanged = false;
+                if (renderer.WasKeyPressed(VK_RIGHT) && reviewMoveIndex < totalMoves)
+                {
+                    ++reviewMoveIndex;
+                    indexChanged = true;
+                }
+                else if (renderer.WasKeyPressed(VK_LEFT) && reviewMoveIndex > 0)
+                {
+                    --reviewMoveIndex;
+                    indexChanged = true;
+                }
+                if (indexChanged)
+                {
+                    reviewBoard = ReplayMoves(reviewRecord.Moves, reviewMoveIndex, kBoardLines);
+                }
                 break;
             }
+            }
+
+            const GoBoard& displayBoard = (turnState == TurnState::Reviewing) ? reviewBoard : board;
 
             renderer.BeginFrame(kClearColorR, kClearColorG, kClearColorB);
             DrawBoard(renderer, whiteTexture, layout);
             if (hasAnalysis && territoryOverlayEnabled)
             {
-                DrawTerritoryOverlay(renderer, board, layout, whiteTexture, latestAnalysis);
+                DrawTerritoryOverlay(renderer, displayBoard, layout, whiteTexture, latestAnalysis);
             }
-            DrawStones(renderer, board, layout);
+            DrawStones(renderer, displayBoard, layout);
             if (hasAnalysis && hintOverlayEnabled && turnState == TurnState::HumanToMove)
             {
                 DrawMoveHints(renderer, layout, whiteTexture, latestAnalysis);
@@ -672,7 +754,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             {
                 DrawWinrateBar(renderer, whiteTexture, layout, ToBlackWinrate(latestAnalysis));
             }
-            DrawHud(renderer, layout, turnState, board);
+            DrawHud(renderer, layout, turnState, displayBoard,
+                reviewMoveIndex, static_cast<int>(reviewRecord.Moves.size()), reviewRecord.Result);
 
             // 手番中、カーソルが空点の交点上にあれば半透明のプレビューを表示する
             if (turnState == TurnState::HumanToMove && isHovering)
