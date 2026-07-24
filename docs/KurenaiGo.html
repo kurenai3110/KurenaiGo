@@ -202,6 +202,13 @@ PNGを生成していましたが、<code>DrawCircle</code>の追加に伴い削
 人間の手番中、カーソルに最も近い空点交点には<code>DrawCircle</code>で半透明のプレビュー円を
 表示します。
 </p>
+<h3>3.1 効果音</h3>
+<p>
+着手時(人間・KataGo双方)に<code>stone_place.wav</code>、対局終了(投了・両者パス後の
+final_score)に<code>game_end.wav</code>を<code>KurenaiEngineBase::PlaySound</code>で再生します。
+いずれも実際の録音ではなく、<code>Tools/generate_sound_effects.ps1</code>で正弦波を合成して
+生成した16bit PCMのWAVファイルです(<code>Assets/Sounds/</code>にコミット)。
+</p>
 </section>
 
 <section id="rules">

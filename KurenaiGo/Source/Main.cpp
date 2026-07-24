@@ -385,10 +385,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     try
     {
         const std::filesystem::path kataGoDir = ResolveAppDataPath(L"KataGo");
+        const std::filesystem::path soundsDir = ResolveAppDataPath(L"Assets/Sounds");
 
         KurenaiEngine2D renderer(kWindowTitle, kWindowWidth, kWindowHeight, GraphicsAPI::DX11);
 
         const TextureHandle whiteTexture = renderer.CreateSolidColorTexture(255, 255, 255, 255);
+        const SoundHandle stonePlaceSound = renderer.LoadSound((soundsDir / L"stone_place.wav").wstring());
+        const SoundHandle gameEndSound = renderer.LoadSound((soundsDir / L"game_end.wav").wstring());
 
         GoBoard board(kBoardLines);
         KataGoClient kataGo;
@@ -487,6 +490,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             case TurnState::HumanToMove:
                 if (resignPressed)
                 {
+                    renderer.PlaySound(gameEndSound);
                     MessageBoxA(nullptr, "投了しました。KataGoの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
                     turnState = TurnState::GameOver;
                 }
@@ -509,6 +513,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 {
                     if (board.TryPlay(hoverRow, hoverCol, Stone::Black))
                     {
+                        renderer.PlaySound(stonePlaceSound);
                         kataGo.PlayMove(Stone::Black, hoverRow, hoverCol);
                         kataGo.RequestGenMove(Stone::White);
                         turnState = TurnState::AIThinking;
@@ -530,6 +535,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     }
                     else if (result.IsResign)
                     {
+                        renderer.PlaySound(gameEndSound);
                         MessageBoxA(nullptr, "KataGoが投了しました。あなたの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
                         turnState = TurnState::GameOver;
                     }
@@ -555,6 +561,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     }
                     else
                     {
+                        renderer.PlaySound(stonePlaceSound);
                         enterHumanToMove();
                     }
                 }
@@ -566,6 +573,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 std::string score;
                 if (kataGo.TryGetFinalScore(score))
                 {
+                    renderer.PlaySound(gameEndSound);
                     const std::string message = "対局終了\n結果: " + score;
                     MessageBoxA(nullptr, message.c_str(), "KurenaiGo - 対局終了", MB_OK | MB_ICONINFORMATION);
                     turnState = TurnState::GameOver;
