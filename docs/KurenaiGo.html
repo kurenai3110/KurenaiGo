@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KurenaiGo ドキュメント</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1c1e21;
+    --muted: #5b6270;
+    --border: #e2e5ea;
+    --code-bg: #f4f5f7;
+    --accent: #a4243b;
+    --accent-bg: #fbeef1;
+    --link: #7a1d30;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --fg: #e8e9ec;
+      --muted: #9aa1ac;
+      --border: #2b2f36;
+      --code-bg: #1d2025;
+      --accent: #e2687e;
+      --accent-bg: #2a1a1f;
+      --link: #f19bab;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  body {
+    font-family: "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif;
+    line-height: 1.75;
+    font-size: 16px;
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: 220px minmax(0, 820px);
+    justify-content: center;
+    gap: 48px;
+    max-width: 1140px;
+    margin: 0 auto;
+    padding: 40px 24px 120px;
+  }
+  @media (max-width: 860px) {
+    .layout { grid-template-columns: 1fr; }
+    nav.toc { position: static !important; margin-bottom: 32px; }
+  }
+  header.page-header {
+    grid-column: 1 / -1;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 24px;
+    margin-bottom: 8px;
+  }
+  header.page-header h1 { margin: 0 0 8px; font-size: 1.9rem; }
+  header.page-header p { margin: 0; color: var(--muted); max-width: 700px; }
+  nav.toc { position: sticky; top: 24px; align-self: start; font-size: 0.92rem; }
+  nav.toc div.toc-title {
+    font-weight: 600; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.04em; font-size: 0.75rem; margin-bottom: 10px;
+  }
+  nav.toc ol { list-style: none; margin: 0; padding: 0; }
+  nav.toc li { margin: 0 0 8px; }
+  nav.toc a {
+    color: var(--fg); text-decoration: none; display: block; padding: 4px 0;
+    border-left: 2px solid transparent; padding-left: 10px;
+  }
+  nav.toc a:hover { color: var(--accent); border-left-color: var(--accent); }
+  main { min-width: 0; }
+  h2 {
+    font-size: 1.4rem; margin-top: 3em; padding-top: 0.4em;
+    border-top: 1px solid var(--border);
+  }
+  h2:first-of-type { margin-top: 1.5em; border-top: none; padding-top: 0; }
+  h3 { font-size: 1.12rem; margin-top: 2em; color: var(--accent); }
+  p, li { color: var(--fg); }
+  code {
+    font-family: "Cascadia Code", "Consolas", "SFMono-Regular", Menlo, monospace;
+    background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.88em;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px 18px; overflow-x: auto; font-size: 0.86rem;
+  }
+  pre code { background: none; padding: 0; border-radius: 0; font-size: inherit; }
+  table { border-collapse: collapse; width: 100%; margin: 1.2em 0; font-size: 0.92rem; }
+  th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--code-bg); font-weight: 600; }
+  a { color: var(--link); }
+  .note {
+    background: var(--accent-bg); border-left: 4px solid var(--accent);
+    padding: 12px 16px; border-radius: 6px; margin: 1.2em 0;
+  }
+  .note p:first-child { margin-top: 0; }
+  .note p:last-child { margin-bottom: 0; }
+  .badge {
+    display: inline-block; font-size: 0.72rem; font-weight: 600; color: var(--accent);
+    background: var(--accent-bg); border-radius: 999px; padding: 2px 10px;
+    margin-left: 8px; vertical-align: middle;
+  }
+  footer {
+    grid-column: 1 / -1; margin-top: 64px; padding-top: 20px;
+    border-top: 1px solid var(--border); color: var(--muted); font-size: 0.85rem;
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<header class="page-header">
+  <h1>KurenaiGo ドキュメント</h1>
+  <p>
+    KurenaiGoは、<a href="https://github.com/kurenai3110/KurenaiEngine">KurenaiEngine</a>
+    (<code>KurenaiEngine2D</code>)を使って実装している囲碁(Go)アプリです。
+    このドキュメントでは、アプリ本体(<code>KurenaiGo/Source/Main.cpp</code>)の実装内容を説明します。
+    KurenaiEngine自体のAPIリファレンスは
+    <a href="../KurenaiEngine/docs/KurenaiEngine.html">KurenaiEngine/docs/KurenaiEngine.html</a>
+    を参照してください。
+  </p>
+</header>
+
+<nav class="toc">
+  <div class="toc-title">目次</div>
+  <ol>
+    <li><a href="#status">1. 現在の実装範囲</a></li>
+    <li><a href="#coordinate">2. 座標系とレイアウト</a></li>
+    <li><a href="#rendering">3. 盤の描画</a></li>
+    <li><a href="#future">4. 今後の実装予定</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<section id="status">
+<h2>1. 現在の実装範囲<span class="badge">盤の表示のみ</span></h2>
+<p>
+現時点では19路盤を画面に表示するところまでを実装しています。石を置く操作や対局ルール
+(着手判定・アゲハマ・地の計算など)は未実装です。
+</p>
+</section>
+
+<section id="coordinate">
+<h2>2. 座標系とレイアウト</h2>
+<p>
+<code>KurenaiEngine2D</code>のワールド座標はウィンドウのピクセル座標そのもので、原点は画面左下、
+Y-upです(<code>DrawSprite</code>の<code>x, y</code>はスプライト中心)。KurenaiGoではウィンドウの
+リサイズに追従できるよう、毎フレーム <code>renderer.GetWidth()</code>/<code>GetHeight()</code> から
+盤のレイアウトを再計算しています(<code>ComputeBoardLayout</code>)。
+</p>
+<pre><code>struct BoardLayout
+{
+    float CenterX;      // 盤の中心(ウィンドウ中心)
+    float CenterY;
+    float BoardExtent;  // 木目の盤面の一辺の長さ
+    float GridExtent;   // 格子線が占める範囲の一辺の長さ(盤面より内側)
+    float LineSpacing;  // 目の間隔 = GridExtent / (kBoardLines - 1)
+};</code></pre>
+<ul>
+<li><code>BoardExtent</code>はウィンドウの短辺 × <code>kBoardExtentRatio</code>(0.88)。
+常に正方形になるよう短辺基準で計算する。</li>
+<li><code>GridExtent</code>は<code>BoardExtent</code> × <code>kGridExtentRatio</code>(0.90)。
+盤面の外周に木目の縁が見えるよう、格子線の範囲を一回り小さくしている。</li>
+<li>格子線のインデックス(0〜18)からワールド座標への変換は
+<code>GridIndexToCoordinate</code>が行う(中心から<code>GridExtent</code>の半分だけ引いた位置を
+起点に、<code>LineSpacing</code>刻みで並べる)。</li>
+</ul>
+</section>
+
+<section id="rendering">
+<h2>3. 盤の描画</h2>
+<p>
+<code>KurenaiEngine2D::DrawSprite</code>は矩形(回転可能)のスプライトしか描画できないため、
+盤の要素はすべて矩形スプライトの組み合わせで表現しています。円形のテクスチャは使っていません。
+</p>
+<table>
+<thead><tr><th>要素</th><th>描画方法</th></tr></thead>
+<tbody>
+<tr><td>盤面(木目)</td><td>1x1の白テクスチャを木目色でティントした正方形スプライト1枚</td></tr>
+<tr><td>格子線(縦横19本ずつ、計38本)</td><td>細長い矩形スプライト。横線は幅=<code>GridExtent</code>・高さ=線の太さ、縦線はその逆</td></tr>
+<tr><td>星(hoshi、3x3=9箇所)</td><td>格子の交点(0-indexedで3, 9, 15)に小さな正方形スプライトを配置(円ではなく点の代用)</td></tr>
+</tbody>
+</table>
+<p>
+テクスチャは<code>CreateSolidColorTexture(255, 255, 255, 255)</code>で作成した白1色のテクスチャを
+1つだけ使い回し、<code>DrawSprite</code>の<code>r, g, b, a</code>引数(乗算ティント)で色を出し分けて
+います(<code>Samples/Sample2D</code>と同じ手法)。星が正確な円ではなく正方形なのは、
+<code>KurenaiEngine2D</code>には矩形スプライト以外の描画プリミティブがないためで、
+石(丸い駒)を描画する段階では実際の円形テクスチャ画像を用意する想定です。
+</p>
+</section>
+
+<section id="future">
+<h2>4. 今後の実装予定</h2>
+<ul>
+<li>石(黒・白)の描画 — 円形のテクスチャ画像を用意し、<code>LoadTexture</code>で読み込んで配置する</li>
+<li>マウス入力による着手(交点へのスナップ) — <code>KurenaiEngine2D</code>自体は入力を提供しないため、
+Win32 APIを直接使う(<code>docs/KurenaiEngine.html</code> 5章参照)</li>
+<li>対局ルール(合法手判定・アゲハマ・地の計算・パス/投了)</li>
+</ul>
+</section>
+
+</main>
+
+<footer>KurenaiGo &middot; docs/KurenaiGo.html</footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,3 @@
+[submodule "KurenaiEngine"]
+	path = KurenaiEngine
+	url = https://github.com/kurenai3110/KurenaiEngine.git
