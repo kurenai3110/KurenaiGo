@@ -117,9 +117,9 @@
   <h1>KurenaiGo ドキュメント</h1>
   <p>
     KurenaiGoは、<a href="https://github.com/kurenai3110/KurenaiEngine">KurenaiEngine</a>
-    (<code>KurenaiEngine2D</code>)を使って実装している囲碁(Go)アプリです。
-    このドキュメントでは、アプリ本体(<code>KurenaiGo/Source/Main.cpp</code>)の実装内容を説明します。
-    KurenaiEngine自体のAPIリファレンスは
+    (<code>KurenaiEngine2D</code>)で描画し、<a href="https://github.com/lightvector/katago">KataGo</a>
+    をGTP経由の対局相手として使う囲碁(Go)アプリです。このドキュメントでは、アプリ本体
+    (<code>KurenaiGo/Source/</code>以下)の実装内容を説明します。KurenaiEngine自体のAPIリファレンスは
     <a href="../KurenaiEngine/docs/KurenaiEngine.html">KurenaiEngine/docs/KurenaiEngine.html</a>
     を参照してください。
   </p>
@@ -130,18 +130,24 @@
   <ol>
     <li><a href="#status">1. 現在の実装範囲</a></li>
     <li><a href="#coordinate">2. 座標系とレイアウト</a></li>
-    <li><a href="#rendering">3. 盤の描画</a></li>
-    <li><a href="#future">4. 今後の実装予定</a></li>
+    <li><a href="#rendering">3. 盤・石の描画</a></li>
+    <li><a href="#rules">4. ルールエンジン(GoBoard)</a></li>
+    <li><a href="#input">5. マウス入力</a></li>
+    <li><a href="#flow">6. 対局の進行(状態遷移)</a></li>
+    <li><a href="#katago">7. KataGo連携(KataGoClient)</a></li>
+    <li><a href="#future">8. 今後の課題</a></li>
   </ol>
 </nav>
 
 <main>
 
 <section id="status">
-<h2>1. 現在の実装範囲<span class="badge">盤の表示のみ</span></h2>
+<h2>1. 現在の実装範囲<span class="badge">KataGoとの対局が可能</span></h2>
 <p>
-現時点では19路盤を画面に表示するところまでを実装しています。石を置く操作や対局ルール
-(着手判定・アゲハマ・地の計算など)は未実装です。
+19路盤の表示、マウスでの着手、合法手判定・捕獲・シンプルコウを含むルール、そして
+<a href="https://github.com/lightvector/katago">KataGo</a>をGTP(Go Text Protocol)経由の
+子プロセスとして起動しての対局(人間=黒、KataGo=白)までを実装しています。色の選択・
+ハンディキャップ・対局のリスタートは未実装です(8章参照)。
 </p>
 </section>
 
@@ -173,10 +179,10 @@ Y-upです(<code>DrawSprite</code>の<code>x, y</code>はスプライト中心)�
 </section>
 
 <section id="rendering">
-<h2>3. 盤の描画</h2>
+<h2>3. 盤・石の描画</h2>
 <p>
 <code>KurenaiEngine2D::DrawSprite</code>は矩形(回転可能)のスプライトしか描画できないため、
-盤の要素はすべて矩形スプライトの組み合わせで表現しています。円形のテクスチャは使っていません。
+盤面・格子線・星は矩形スプライトの組み合わせで表現しています(円形のテクスチャは使っていません)。
 </p>
 <table>
 <thead><tr><th>要素</th><th>描画方法</th></tr></thead>
@@ -184,24 +190,151 @@ Y-upです(<code>DrawSprite</code>の<code>x, y</code>はスプライト中心)�
 <tr><td>盤面(木目)</td><td>1x1の白テクスチャを木目色でティントした正方形スプライト1枚</td></tr>
 <tr><td>格子線(縦横19本ずつ、計38本)</td><td>細長い矩形スプライト。横線は幅=<code>GridExtent</code>・高さ=線の太さ、縦線はその逆</td></tr>
 <tr><td>星(hoshi、3x3=9箇所)</td><td>格子の交点(0-indexedで3, 9, 15)に小さな正方形スプライトを配置(円ではなく点の代用)</td></tr>
+<tr><td>石(黒・白)</td><td><code>Assets/stone_black.png</code> / <code>stone_white.png</code>(アルファ付きPNG)を
+<code>LoadTexture</code>で読み込み、<code>GoBoard</code>の石がある交点に配置</td></tr>
 </tbody>
 </table>
 <p>
-テクスチャは<code>CreateSolidColorTexture(255, 255, 255, 255)</code>で作成した白1色のテクスチャを
-1つだけ使い回し、<code>DrawSprite</code>の<code>r, g, b, a</code>引数(乗算ティント)で色を出し分けて
-います(<code>Samples/Sample2D</code>と同じ手法)。星が正確な円ではなく正方形なのは、
-<code>KurenaiEngine2D</code>には矩形スプライト以外の描画プリミティブがないためで、
-石(丸い駒)を描画する段階では実際の円形テクスチャ画像を用意する想定です。
+盤面・格子線・星は<code>CreateSolidColorTexture(255, 255, 255, 255)</code>で作成した白1色の
+テクスチャを1つだけ使い回し、<code>DrawSprite</code>の<code>r, g, b, a</code>引数(乗算ティント)で
+色を出し分けています(<code>Samples/Sample2D</code>と同じ手法)。石だけは矩形スプライトでは
+円に見せられないため、<code>Tools/generate_stone_textures.ps1</code>(GDI+のアンチエイリアス付き
+楕円描画)で事前生成したPNGを実テクスチャとして読み込んでいます。人間の手番中、カーソルに
+最も近い空点交点には半透明の白石テクスチャ(タイントで薄いグレー・半透明化)をプレビュー表示します。
+</p>
+</section>
+
+<section id="rules">
+<h2>4. ルールエンジン(<code>GoBoard</code>)</h2>
+<p>
+<code>KurenaiGo::GoBoard</code>(<code>Source/GoBoard.h/.cpp</code>)は盤面と囲碁のルールのみを
+扱う、描画・入力から独立したクラスです。座標は<code>row=0</code>が盤の下端・<code>col=0</code>が
+左端(<code>row*Size+col</code>の1次元配列)で、これは2章のワールド座標系(インデックス0が下/左)
+およびGTPの座標系(行1=下端、列A=左端)の両方と一致するため、変換が単純になります。
+</p>
+<h3>4.1 合法手判定と捕獲</h3>
+<p>
+<code>TryPlay(row, col, color)</code>は次の順序で処理します。
+</p>
+<ol>
+<li>空点でなければ非合法。シンプルコウで禁止されている地点なら非合法。</li>
+<li>石を仮に置き、隣接する相手グループをフラッドフィル(<code>CollectGroup</code>)で走査して
+呼吸点(liberty)を数える。呼吸点0のグループがあれば取り上げる(複数方向から同じグループに
+到達する場合の重複除去あり)。</li>
+<li>相手を取り上げた後、自分のグループの呼吸点を再計算する。0なら自殺手として非合法・
+全ての変更をロールバックする。</li>
+<li>合法なら確定し、連続パス数を0にリセットする。</li>
+</ol>
+<h3>4.2 シンプルコウ</h3>
+<p>
+直前の手が「相手をちょうど1つ取り、打った石自身が呼吸点1つ(その取った地点)だけの単独石になる」
+形だった場合、その地点への即座の再着手を次の1手だけ禁止します(<code>m_KoForbiddenIndex</code>)。
+パスを含むいずれかの着手が行われるとこの制約は解除されます。より厳密な超劫(局面の反復)判定は
+行っておらず、一般的なアプリで広く使われる簡易版のコウ規則です。
+</p>
+<h3>4.3 地の計算をしない理由</h3>
+<p>
+<code>GoBoard</code>自体は地の計算(スコアリング)を行いません。生きた石・死んだ石の判定
+(セキ等の特殊な形を含む)を自前実装するのは複雑で誤りやすいため、対局終了(両者パス)時は
+KataGoの<code>final_score</code>(7章)にスコアリングを委譲しています。
+</p>
+</section>
+
+<section id="input">
+<h2>5. マウス入力</h2>
+<p>
+<code>docs/KurenaiEngine.html</code> 5章の通り、<code>KurenaiEngine2D</code>自体は入力を提供せず
+Win32 APIを直接使う設計です。ただし<code>KurenaiEngineBase</code>はHWNDを公開していないため、
+<code>ScreenToClient</code>で座標変換するための自ウィンドウHWNDが取得できません。KurenaiGoでは
+起動直後に一度だけ<code>FindWindowW(L"KurenaiEngineWindowClass", L"KurenaiGo")</code>で自ウィンドウを
+検索して補っています(<code>KurenaiEngineWindowClass</code>はエンジン内部で登録している固定の
+ウィンドウクラス名。<code>Core/Window.cpp</code>参照)。
+</p>
+<p>
+毎フレーム<code>GetCursorPos</code>→<code>ScreenToClient</code>でクライアント座標(原点は左上、
+Y-down)を取得し、<code>height - clientY</code>でワールド座標(原点は左下、Y-up)に変換します。
+最も近い交点との距離が<code>LineSpacing</code>の40%以内であればその交点を「ホバー中」とみなします
+(<code>TryGetHoveredIntersection</code>)。クリック・パス・投了はいずれも
+<code>GetAsyncKeyState</code>の状態を前フレームと比較した立ち上がりエッジで検出しており、
+キー/ボタンを押し続けても1回しか発火しません。
+</p>
+</section>
+
+<section id="flow">
+<h2>6. 対局の進行(状態遷移)</h2>
+<p>
+<code>Main.cpp</code>の<code>TurnState</code>で対局の進行を管理します。
+</p>
+<table>
+<thead><tr><th>状態</th><th>内容</th></tr></thead>
+<tbody>
+<tr><td><code>EngineStarting</code></td><td>KataGo起動中。<code>KataGoClient::IsStartupComplete()</code>をポーリング</td></tr>
+<tr><td><code>HumanToMove</code></td><td>黒(人間)の手番。クリック/<code>P</code>/<code>R</code>を受け付ける</td></tr>
+<tr><td><code>AIThinking</code></td><td>白(KataGo)の<code>genmove</code>応答待ち。<code>TryGetGenMoveResult</code>をポーリング</td></tr>
+<tr><td><code>WaitingForScore</code></td><td>両者パス後、<code>final_score</code>応答待ち</td></tr>
+<tr><td><code>GameOver</code></td><td>対局終了。入力を受け付けず盤面のみ表示し続ける</td></tr>
+</tbody>
+</table>
+<p>
+対局終了・投了・通信エラーは<code>KurenaiEngine2D</code>に文字描画機能が無いため、既存の
+エラーダイアログ(<code>MessageBoxA</code>)と同じ手法で通知します。
+</p>
+</section>
+
+<section id="katago">
+<h2>7. KataGo連携(<code>KataGoClient</code>)</h2>
+<p>
+<code>KurenaiGo::KataGoClient</code>(<code>Source/KataGoClient.h/.cpp</code>)は
+<code>katago.exe</code>を<code>gtp -model &lt;model.bin.gz&gt; -config &lt;gtp.cfg&gt;</code>で
+子プロセス起動し、標準入出力を匿名パイプでリダイレクトしてGTPのテキストコマンド/応答を
+やり取りします(<code>CreateProcessW</code> + <code>CreatePipe</code>によるWin32の標準的な
+「リダイレクトされた入出力を持つ子プロセス」の実装)。標準エラー出力(チューニング進捗等の
+診断ログ)は<code>KataGo/katago_stderr.log</code>へリダイレクトしています。
+</p>
+<h3>7.1 非同期処理</h3>
+<p>
+起動処理(<code>StartAsync</code>)とKataGoの着手要求(<code>RequestGenMove</code>)・終局判定
+(<code>RequestFinalScore</code>)は、OpenCLの初回チューニング(数十秒)やKataGoの思考時間
+(<code>time_settings 0 5 1</code>で最大5秒/手)がかかるため、いずれも専用スレッドで実行します。
+メインの描画ループは<code>TryGetGenMoveResult</code>等のポーリングで結果を受け取るだけなので、
+KataGoが応答を返すまでの間もウィンドウは応答なしにならず、盤面の再描画・リサイズ処理を続けられます。
+</p>
+<h3>7.2 座標変換</h3>
+<p>
+GTPの座標は列がA〜T(<code>I</code>を除く)、行が盤の下端から1始まりの数字です。
+<code>GoBoard</code>の座標系(<code>row=0</code>が下端、<code>col=0</code>が左端)と対応しているため、
+<code>ToVertex</code>/<code>ParseVertex</code>での変換は「列インデックスに応じて<code>A</code>から
+数え上げ、<code>I</code>をまたぐ場合は1つ増やす」「行はインデックス+1」という単純な計算のみで
+行っています。
+</p>
+<h3>7.3 GTPコマンド</h3>
+<table>
+<thead><tr><th>コマンド</th><th>用途</th></tr></thead>
+<tbody>
+<tr><td><code>boardsize 19</code> / <code>clear_board</code> / <code>komi 7.5</code> / <code>time_settings 0 5 1</code></td><td>起動直後のハンドシェイク(<code>StartAsync</code>)</td></tr>
+<tr><td><code>play &lt;B|W&gt; &lt;vertex|pass&gt;</code></td><td>人間の着手・パスをKataGo側の盤面にも反映する</td></tr>
+<tr><td><code>genmove &lt;B|W&gt;</code></td><td>KataGoに着手を生成させる。応答は着手・<code>pass</code>・<code>resign</code>のいずれか</td></tr>
+<tr><td><code>final_score</code></td><td>両者パス後の結果(例: <code>B+3.5</code>)取得</td></tr>
+<tr><td><code>quit</code></td><td>終了時にデストラクタから送信</td></tr>
+</tbody>
+</table>
+<h3>7.4 終了処理</h3>
+<p>
+<code>KataGoClient</code>のデストラクタは、進行中のワーカースレッドの完了を待ってから
+<code>quit</code>を送信し、プロセス終了を最大3秒待って、それでも終了しない場合は
+<code>TerminateProcess</code>で強制終了します。これによりKurenaiGoを閉じても<code>katago.exe</code>が
+残留しません。
 </p>
 </section>
 
 <section id="future">
-<h2>4. 今後の実装予定</h2>
+<h2>8. 今後の課題</h2>
 <ul>
-<li>石(黒・白)の描画 — 円形のテクスチャ画像を用意し、<code>LoadTexture</code>で読み込んで配置する</li>
-<li>マウス入力による着手(交点へのスナップ) — <code>KurenaiEngine2D</code>自体は入力を提供しないため、
-Win32 APIを直接使う(<code>docs/KurenaiEngine.html</code> 5章参照)</li>
-<li>対局ルール(合法手判定・アゲハマ・地の計算・パス/投了)</li>
+<li>色の選択(現在は人間=黒固定)・ハンディキャップ対局</li>
+<li>対局のリスタート(現在はアプリの再起動が必要)</li>
+<li>アゲハマ数・手番・KataGoの評価値などのHUD表示(<code>KurenaiEngine2D</code>に文字描画が
+無いため、実現するにはビットマップフォント等の自前実装が必要)</li>
+<li>棋譜の保存・読み込み(SGF)</li>
 </ul>
 </section>
 

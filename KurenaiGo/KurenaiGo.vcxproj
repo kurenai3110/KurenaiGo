@@ -44,15 +44,23 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <!--
-    出力先はKurenaiEngine(submodule)のBuild\Bin配下に揃える。KurenaiEngine.dllは実行ファイルと
-    同じフォルダに存在しないと起動時に読み込めないため(docs/KurenaiEngine.html 6章参照)。
+    出力先は本リポジトリ自身のBuild\Bin配下(KurenaiEngineとは独立)。実行に必要なもの
+    (KurenaiEngine.dll、Assets\の石テクスチャ、KataGo\のKataGo本体)はすべてPostBuildEventで
+    実行ファイルと同じフォルダへ集約する(PathUtil::ResolveAppDataPathも参照)。これにより
+    Build\Bin\<Platform>\<Config>\ フォルダごとコピーするだけで動作する。
+    なお、KurenaiEngine2D/3DはシェーダファイルをGetModuleFileNameW(nullptr, ...)、つまり
+    「実行ファイル(KurenaiGo.exe)の場所から4階層上 + KurenaiEngine\Shaders\」という固定の
+    相対パスで解決する実装になっている(KurenaiEngine\Source\Engine\KurenaiEngine2D.cpp参照)。
+    これはKurenaiEngine.dll自体の実装(エンジン側のリポジトリ)に起因する制約でこちらからは
+    変更できないため、シェーダ一式だけは実行ファイルの直下ではなくそのパス(KurenaiEngine\Shaders\、
+    submodule内の未追跡コピー)へ別途コピーしている。
   -->
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <OutDir>$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\</OutDir>
+    <OutDir>$(SolutionDir)Build\Bin\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(SolutionDir)Build\Intermediate\$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <OutDir>$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\</OutDir>
+    <OutDir>$(SolutionDir)Build\Bin\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(SolutionDir)Build\Intermediate\$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -69,6 +77,13 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
+    <PostBuildEvent>
+      <Command>xcopy /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\KurenaiEngine.dll" "$(OutDir)"
+xcopy /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\KurenaiEngine.pdb" "$(OutDir)"
+xcopy /E /I /Y /D "$(ProjectDir)Assets" "$(OutDir)Assets"
+if not exist "$(OutDir)KataGo" mkdir "$(OutDir)KataGo"
+xcopy /E /I /Y /D "$(SolutionDir)KurenaiEngine\KurenaiEngine\Shaders" "$(SolutionDir)KurenaiEngine\Shaders"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -88,9 +103,24 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
     </Link>
+    <PostBuildEvent>
+      <Command>xcopy /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\KurenaiEngine.dll" "$(OutDir)"
+xcopy /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\KurenaiEngine.pdb" "$(OutDir)"
+xcopy /E /I /Y /D "$(ProjectDir)Assets" "$(OutDir)Assets"
+if not exist "$(OutDir)KataGo" mkdir "$(OutDir)KataGo"
+xcopy /E /I /Y /D "$(SolutionDir)KurenaiEngine\KurenaiEngine\Shaders" "$(SolutionDir)KurenaiEngine\Shaders"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="Source\Main.cpp" />
+    <ClCompile Include="Source\GoBoard.cpp" />
+    <ClCompile Include="Source\KataGoClient.cpp" />
+    <ClCompile Include="Source\PathUtil.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Source\GoBoard.h" />
+    <ClInclude Include="Source\KataGoClient.h" />
+    <ClInclude Include="Source\PathUtil.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\KurenaiEngine\KurenaiEngine\KurenaiEngine.vcxproj">
