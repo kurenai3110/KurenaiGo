@@ -135,19 +135,21 @@
     <li><a href="#input">5. マウス入力</a></li>
     <li><a href="#flow">6. 対局の進行(状態遷移)</a></li>
     <li><a href="#katago">7. KataGo連携(KataGoClient)</a></li>
-    <li><a href="#future">8. 今後の課題</a></li>
+    <li><a href="#analysis">8. 解析結果の可視化(勝率・地合い・着手ヒント)</a></li>
+    <li><a href="#future">9. 今後の課題</a></li>
   </ol>
 </nav>
 
 <main>
 
 <section id="status">
-<h2>1. 現在の実装範囲<span class="badge">KataGoとの対局が可能</span></h2>
+<h2>1. 現在の実装範囲<span class="badge">KataGoとの対局・解析表示が可能</span></h2>
 <p>
 19路盤の表示、マウスでの着手、合法手判定・捕獲・シンプルコウを含むルール、そして
 <a href="https://github.com/lightvector/katago">KataGo</a>をGTP(Go Text Protocol)経由の
-子プロセスとして起動しての対局(人間=黒、KataGo=白)までを実装しています。色の選択・
-ハンディキャップ・対局のリスタートは未実装です(8章参照)。
+子プロセスとして起動しての対局(人間=黒、KataGo=白)までを実装しています。あわせて、
+<code>kata-analyze</code>による局面解析を使った勝率表示・地合い可視化・着手ヒント(8章)も
+実装済みです。色の選択・ハンディキャップ・対局のリスタートは未実装です(9章参照)。
 </p>
 </section>
 
@@ -254,9 +256,9 @@ Win32 APIを直接使う設計です。ただし<code>KurenaiEngineBase</code>�
 毎フレーム<code>GetCursorPos</code>→<code>ScreenToClient</code>でクライアント座標(原点は左上、
 Y-down)を取得し、<code>height - clientY</code>でワールド座標(原点は左下、Y-up)に変換します。
 最も近い交点との距離が<code>LineSpacing</code>の40%以内であればその交点を「ホバー中」とみなします
-(<code>TryGetHoveredIntersection</code>)。クリック・パス・投了はいずれも
-<code>GetAsyncKeyState</code>の状態を前フレームと比較した立ち上がりエッジで検出しており、
-キー/ボタンを押し続けても1回しか発火しません。
+(<code>TryGetHoveredIntersection</code>)。クリック・パス・投了・地合い表示切替(<code>T</code>)・
+着手ヒント表示切替(<code>H</code>)はいずれも<code>GetAsyncKeyState</code>の状態を前フレームと
+比較した立ち上がりエッジで検出しており、キー/ボタンを押し続けても1回しか発火しません。
 </p>
 </section>
 
@@ -327,14 +329,71 @@ GTPの座標は列がA〜T(<code>I</code>を除く)、行が盤の下端から1�
 </p>
 </section>
 
+<section id="analysis">
+<h2>8. 解析結果の可視化(勝率・地合い・着手ヒント)</h2>
+<p>
+黒(人間)の手番になるたびに<code>KataGoClient::RequestAnalysis(Stone::Black)</code>で
+<code>kata-analyze</code>による局面解析を要求し、結果を<code>DrawWinrateBar</code>
+(勝率バー)・<code>DrawTerritoryOverlay</code>(地合い可視化、<code>T</code>キーでトグル)・
+<code>DrawMoveHints</code>(着手ヒント、<code>H</code>キーでトグル)の3つの描画関数で
+可視化しています。<code>KurenaiEngine2D</code>には文字描画機能が無いため、勝率は数値では
+なく黒/白の面積比を表す横棒、地合いは色つきの半透明オーバーレイ、ヒントは順位別に色分けした
+マーカーとして、すべて既存の<code>DrawSprite</code>(矩形スプライト)のみで表現しており、
+この機能のためにエンジン(KurenaiEngineサブモジュール)側の変更は行っていません。
+</p>
+<h3>8.1 kata-analyzeのプロトコル(実機で検証)</h3>
+<p>
+<code>kata-analyze &lt;B|W&gt; interval 50 ownership true</code>を送ると、GTPの即時応答
+(<code>= </code>)は返らず、代わりに<code>info move &lt;頂点&gt; visits N ... winrate W ...
+scoreLead S ... order K ... pv ... [次のinfo move...] ownership &lt;361個の浮動小数&gt;</code>
+という1行の報告が定期的に再送され続けます(差分ではなく毎回全体を送り直す)。
+<code>winrate</code>/<code>scoreLead</code>/<code>ownership</code>はいずれも
+<strong>コマンド引数で指定した色(手番側)から見た値</strong>で、<code>order 0</code>の
+候補手が最有力手(=現局面の評価値として使う値)です。<code>ownership</code>配列(19路なら
+361要素)は<strong>盤面左上(GTPのA19)がindex 0</strong>で、右→下へ行優先(row-major)に
+並びます。KurenaiGoの内部座標(<code>row=0</code>が盤面下端・<code>col=0</code>が左端)に
+対応させると <code>ownershipIndex = (Size - 1 - row) * Size + col</code> となります
+(黒石をA19に置いて解析し、index 0付近の値が最も強く反応することを確認して検証済み)。
+</p>
+<div class="note">
+<p>
+<strong>解析の停止方法に関する既知の癖</strong>: kata-analyzeは一般的には空行を送ると
+停止しますが、このKataGoビルドでは「報告を受け取ってから短時間で空行による停止要求を送ると、
+その後の応答が返らなくなる(ハングする)」現象を実機で複数回確認しました。空行の代わりに
+通常のGTPコマンド(KurenaiGoでは<code>protocol_version</code>)を送ると解析はただちに中断され、
+そのコマンド自身の正常な応答が届きます。この方式は繰り返しの実機検証で安定して動作したため、
+<code>KataGoClient::ExchangeAnalyze</code>では停止に空行ではなく<code>protocol_version</code>を
+使っています。
+</p>
+</div>
+<h3>8.2 解析タイミングと打ち切り</h3>
+<p>
+解析は経過時間(目安600ms)または最有力手のvisits数(目安250)のいずれかに達し次第打ち切り、
+どちらも満たさない場合でも1500msでハードキャップします。応答が来るまでの間も
+<code>KataGoClient</code>の非同期パターン(<code>RequestAnalysis</code> /
+<code>TryGetAnalysisResult</code>のポーリング)により描画ループは止まりません。解析は
+対局進行に必須ではない補助情報のため、失敗しても<code>KataGoAnalysisResult::Failed</code>で
+通知するのみで、genmove失敗時のようなダイアログ表示・対局中断は行いません。
+</p>
+<h3>8.3 描画</h3>
+<table>
+<thead><tr><th>要素</th><th>描画方法</th></tr></thead>
+<tbody>
+<tr><td>勝率バー</td><td>盤の上マージンに、黒視点の勝率で2分割した横棒(黒側は暗色、白側は明色のスプライト)を常時表示</td></tr>
+<tr><td>地合い可視化(<code>T</code>キー)</td><td>石のない交点のみ、黒視点のownership値が閾値(0.15)を超えたら、黒地=青系・白地=赤系の半透明スプライトを重ねる</td></tr>
+<tr><td>着手ヒント(<code>H</code>キー)</td><td>候補手を<code>Order</code>昇順に並べ、上位3件を金・銀・銅の色分けマーカーで表示(黒の手番中のみ)</td></tr>
+</tbody>
+</table>
+</section>
+
 <section id="future">
-<h2>8. 今後の課題</h2>
+<h2>9. 今後の課題</h2>
 <ul>
 <li>色の選択(現在は人間=黒固定)・ハンディキャップ対局</li>
 <li>対局のリスタート(現在はアプリの再起動が必要)</li>
-<li>アゲハマ数・手番・KataGoの評価値などのHUD表示(<code>KurenaiEngine2D</code>に文字描画が
-無いため、実現するにはビットマップフォント等の自前実装が必要)</li>
-<li>棋譜の保存・読み込み(SGF)</li>
+<li>勝率・目差の数値表示(現状は面積比の横棒のみ。文字描画にはビットマップフォント等の
+自前実装、またはKurenaiEngine2DへのImGui等の統合が必要)</li>
+<li>棋譜の保存・読み込み(SGF)、対局後の解析(損失グラフ等)</li>
 </ul>
 </section>
 

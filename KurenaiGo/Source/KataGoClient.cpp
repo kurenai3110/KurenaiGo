@@ -17,6 +17,31 @@ namespace KurenaiGo
                 handle = nullptr;
             }
         }
+
+        // 空白区切りでトークン分割する(kata-analyzeの報告行のパース用)
+        std::vector<std::string> Tokenize(const std::string& line)
+        {
+            std::vector<std::string> tokens;
+            size_t pos = 0;
+            while (pos < line.size())
+            {
+                while (pos < line.size() && std::isspace(static_cast<unsigned char>(line[pos])))
+                {
+                    ++pos;
+                }
+                if (pos >= line.size())
+                {
+                    break;
+                }
+                const size_t start = pos;
+                while (pos < line.size() && !std::isspace(static_cast<unsigned char>(line[pos])))
+                {
+                    ++pos;
+                }
+                tokens.push_back(line.substr(start, pos - start));
+            }
+            return tokens;
+        }
     }
 
     KataGoClient::~KataGoClient()
@@ -331,6 +356,234 @@ namespace KurenaiGo
         return true;
     }
 
+    void KataGoClient::RequestAnalysis(Stone colorToMove)
+    {
+        if (m_WorkerThread.joinable())
+        {
+            m_WorkerThread.join();
+        }
+        m_AnalysisReady.store(false);
+
+        m_WorkerThread = std::thread([this, colorToMove]()
+        {
+            KataGoAnalysisResult result;
+            result.ColorToMove = colorToMove;
+            try
+            {
+                result = ExchangeAnalyze(colorToMove);
+            }
+            catch (const std::exception& e)
+            {
+                result = KataGoAnalysisResult{};
+                result.ColorToMove = colorToMove;
+                result.Failed = true;
+                m_LastError = e.what();
+            }
+            m_AnalysisResult = result;
+            m_AnalysisReady.store(true);
+        });
+    }
+
+    bool KataGoClient::TryGetAnalysisResult(KataGoAnalysisResult& outResult)
+    {
+        if (!m_AnalysisReady.load())
+        {
+            return false;
+        }
+        outResult = m_AnalysisResult;
+        return true;
+    }
+
+    void KataGoClient::ParseAnalysisLine(const std::string& line, KataGoAnalysisResult& outResult)
+    {
+        const std::vector<std::string> tokens = Tokenize(line);
+        outResult.TopMoves.clear();
+        outResult.Ownership.clear();
+
+        size_t i = 0;
+        while (i < tokens.size())
+        {
+            if (tokens[i] == "info" && i + 1 < tokens.size() && tokens[i + 1] == "move")
+            {
+                AnalysisMoveInfo move;
+                float scoreLead = 0.0f;
+                if (i + 2 < tokens.size() && tokens[i + 2] != "pass")
+                {
+                    try
+                    {
+                        ParseNormalVertex(tokens[i + 2], move.Row, move.Col);
+                    }
+                    catch (const std::exception&)
+                    {
+                        // 解釈できない頂点表記は座標なし(Row/Col=-1)のまま無視する
+                    }
+                }
+                i += 3;
+
+                while (i < tokens.size() && tokens[i] != "info" && tokens[i] != "ownership")
+                {
+                    const std::string& key = tokens[i];
+                    if (key == "pv")
+                    {
+                        // pvは指し手が可変長で続くリストのため、次のinfo/ownershipまで読み飛ばす
+                        ++i;
+                        while (i < tokens.size() && tokens[i] != "info" && tokens[i] != "ownership")
+                        {
+                            ++i;
+                        }
+                        continue;
+                    }
+
+                    if (i + 1 >= tokens.size())
+                    {
+                        break;
+                    }
+                    const std::string& value = tokens[i + 1];
+                    if (key == "visits")
+                    {
+                        move.Visits = std::stoi(value);
+                    }
+                    else if (key == "winrate")
+                    {
+                        move.Winrate = std::stof(value);
+                    }
+                    else if (key == "order")
+                    {
+                        move.Order = std::stoi(value);
+                    }
+                    else if (key == "scoreLead")
+                    {
+                        scoreLead = std::stof(value);
+                    }
+                    i += 2;
+                }
+
+                if (move.Order == 0)
+                {
+                    outResult.WinrateForColorToMove = move.Winrate;
+                    outResult.ScoreLeadForColorToMove = scoreLead;
+                }
+                outResult.TopMoves.push_back(move);
+            }
+            else if (tokens[i] == "ownership")
+            {
+                ++i;
+                outResult.Ownership.reserve(tokens.size() - i);
+                while (i < tokens.size())
+                {
+                    try
+                    {
+                        outResult.Ownership.push_back(std::stof(tokens[i]));
+                    }
+                    catch (const std::exception&)
+                    {
+                        // 数値でないトークンが紛れ込んだ場合は無視する
+                    }
+                    ++i;
+                }
+            }
+            else
+            {
+                ++i;
+            }
+        }
+    }
+
+    KataGoAnalysisResult KataGoClient::ExchangeAnalyze(Stone colorToMove)
+    {
+        // kata-analyzeはGTPの即時応答を返さず、代わりに"info move ... ownership ..."という
+        // 1行の報告を定期的に送り続ける(1行が更新のたびに丸ごと再送される)。
+        //
+        // 停止方法: 空行を送って止める一般的な方法は、このKataGoビルドでは特定のタイミング
+        // (報告を受け取ってから短時間で停止要求すると)で応答が返らなくなる不具合を実機で確認した
+        // (kata-analyze開始直後の素の"="応答自体は問題なく、その後の空行停止のみが影響を受ける)。
+        // 代わりに、通常のGTPコマンド(ここではprotocol_version)を送ると解析はただちに中断され、
+        // そのコマンド自身の正常な応答が届く。この方式は複数回の実機検証で安定して動作したため、
+        // 停止には空行ではなく実コマンドを使う。詳細な検証結果はdocs/KurenaiGo.htmlを参照
+        constexpr DWORD kAnalysisTargetMs = 600;
+        constexpr DWORD kAnalysisHardCapMs = 1500;
+        constexpr int kAnalysisTargetVisits = 250;
+
+        KataGoAnalysisResult result;
+        result.ColorToMove = colorToMove;
+
+        // PlayMove/RequestGenMove等、他のGTPやり取りと同時にパイプへ読み書きしないよう、
+        // この解析のやり取り全体(送信〜終端行を読むまで)を通してロックを保持する
+        std::lock_guard<std::mutex> lock(m_IoMutex);
+
+        const std::string command = std::string("kata-analyze ") + ToGtpColorChar(colorToMove) +
+            " interval 50 ownership true";
+        SendCommand(command);
+
+        const DWORD startTick = GetTickCount();
+        bool stopSent = false;
+        bool sawReport = false;
+        std::string pending;
+        std::array<char, 4096> chunk{};
+
+        for (;;)
+        {
+            size_t newlinePos;
+            while ((newlinePos = pending.find('\n')) != std::string::npos)
+            {
+                std::string line = pending.substr(0, newlinePos);
+                pending.erase(0, newlinePos + 1);
+                if (!line.empty() && line.back() == '\r')
+                {
+                    line.pop_back();
+                }
+
+                if (line.rfind("info ", 0) == 0)
+                {
+                    ParseAnalysisLine(line, result);
+                    sawReport = true;
+                }
+                else if (!line.empty() && line[0] == '?')
+                {
+                    throw std::runtime_error("KataGoがkata-analyzeでエラーを返しました: " + line);
+                }
+                else if (!line.empty() && line[0] == '=' && stopSent)
+                {
+                    // kata-analyze開始直後にも素の"="(空白なし)を一度返すため、停止要求より前に
+                    // 届く"="は前置き応答として無視する。本当の終端は停止コマンド送信後に届く
+                    // "= "(protocol_versionへの応答)のみ
+                    return result;
+                }
+                // 空行・停止要求前の前置き応答等はそのまま無視して次の行へ
+            }
+
+            if (!stopSent)
+            {
+                const DWORD elapsed = GetTickCount() - startTick;
+                int bestVisits = 0;
+                for (const AnalysisMoveInfo& move : result.TopMoves)
+                {
+                    if (move.Order == 0)
+                    {
+                        bestVisits = move.Visits;
+                        break;
+                    }
+                }
+
+                const bool shouldStop = elapsed >= kAnalysisHardCapMs ||
+                    (sawReport && (elapsed >= kAnalysisTargetMs || bestVisits >= kAnalysisTargetVisits));
+                if (shouldStop)
+                {
+                    SendCommand("protocol_version"); // 実コマンドの送信でkata-analyzeを中断させる
+                    stopSent = true;
+                }
+            }
+
+            DWORD bytesRead = 0;
+            const BOOL ok = ReadFile(m_ChildStdoutRead, chunk.data(), static_cast<DWORD>(chunk.size()), &bytesRead, nullptr);
+            if (!ok || bytesRead == 0)
+            {
+                throw std::runtime_error("KataGoからの解析応答読み取りに失敗しました(プロセスが終了した可能性があります)");
+            }
+            pending.append(chunk.data(), bytesRead);
+        }
+    }
+
     std::string KataGoClient::ToVertex(int row, int col)
     {
         // GTPの列はA始まりでIを飛ばす(A,B,C,D,E,F,G,H,J,K,...)。行は盤の下端から1始まり
@@ -340,6 +593,25 @@ namespace KurenaiGo
             columnChar = static_cast<char>(columnChar + 1);
         }
         return std::string(1, columnChar) + std::to_string(row + 1);
+    }
+
+    void KataGoClient::ParseNormalVertex(const std::string& vertex, int& outRow, int& outCol)
+    {
+        if (vertex.size() < 2)
+        {
+            throw std::runtime_error("KataGoの座標を解釈できませんでした: " + vertex);
+        }
+
+        char columnChar = static_cast<char>(std::toupper(static_cast<unsigned char>(vertex[0])));
+        int columnIndex = columnChar - 'A';
+        if (columnChar > 'I')
+        {
+            columnIndex -= 1; // Iを飛ばしている分を補正
+        }
+        const int rowNumber = std::stoi(vertex.substr(1));
+
+        outCol = columnIndex;
+        outRow = rowNumber - 1;
     }
 
     void KataGoClient::ParseVertex(const std::string& vertex, KataGoMoveResult& outResult)
@@ -371,21 +643,7 @@ namespace KurenaiGo
             return;
         }
 
-        if (trimmed.size() < 2)
-        {
-            throw std::runtime_error("KataGoの着手座標を解釈できませんでした: " + vertex);
-        }
-
-        char columnChar = static_cast<char>(std::toupper(static_cast<unsigned char>(trimmed[0])));
-        int columnIndex = columnChar - 'A';
-        if (columnChar > 'I')
-        {
-            columnIndex -= 1; // Iを飛ばしている分を補正
-        }
-        const int rowNumber = std::stoi(trimmed.substr(1));
-
-        outResult.Col = columnIndex;
-        outResult.Row = rowNumber - 1;
+        ParseNormalVertex(trimmed, outResult.Row, outResult.Col);
     }
 
     char KataGoClient::ToGtpColorChar(Stone color)

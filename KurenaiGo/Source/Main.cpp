@@ -3,18 +3,21 @@
 // GTP(Go Text Protocol)で動かして人間(黒)とKataGo(白)の対局を行う。
 // 座標系はワールド=ピクセル座標(原点は画面左下、Y-up)。
 //
-// 操作: 交点クリックで着手 / Pキーでパス / Rキーで投了 / Escで終了
+// 操作: 交点クリックで着手 / Pキーでパス / Rキーで投了 / Tキーで地合い表示切替 /
+//       Hキーで着手ヒント表示切替 / Escで終了
 
 #include <Windows.h>
 
 #include <objbase.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #include "GoBoard.h"
 #include "KataGoClient.h"
@@ -55,6 +58,28 @@ namespace
     constexpr float kClearColorR = 0.12f;
     constexpr float kClearColorG = 0.12f;
     constexpr float kClearColorB = 0.14f;
+
+    // 勝率バー(黒番から見た勝率で2色に分割する横棒)の見た目
+    constexpr float kWinrateBarHeight = 18.0f;
+    constexpr float kWinrateBarMargin = 6.0f; // 盤の上端からバーまでの隙間
+    constexpr float kWinrateBlackR = 0.05f, kWinrateBlackG = 0.05f, kWinrateBlackB = 0.05f;
+    constexpr float kWinrateWhiteR = 0.95f, kWinrateWhiteG = 0.95f, kWinrateWhiteB = 0.92f;
+
+    // 地合い可視化(Tキーでトグル)の見た目。黒地=青系、白地=赤系のオーバーレイ
+    constexpr float kTerritoryBlackR = 0.25f, kTerritoryBlackG = 0.45f, kTerritoryBlackB = 0.95f;
+    constexpr float kTerritoryWhiteR = 0.95f, kTerritoryWhiteG = 0.35f, kTerritoryWhiteB = 0.25f;
+    // これ未満のownershipの絶対値は「地としてほぼ確定していない」とみなし表示しない
+    constexpr float kTerritoryMinMagnitude = 0.15f;
+    constexpr float kTerritoryMaxAlpha = 0.55f;
+
+    // 着手ヒント(Hキーでトグル)の最大表示数と、順位ごとの色(金・銀・銅)・不透明度
+    constexpr int kMaxHintMarkers = 3;
+    constexpr float kHintColors[kMaxHintMarkers][3] = {
+        { 1.00f, 0.85f, 0.20f },
+        { 0.75f, 0.78f, 0.82f },
+        { 0.80f, 0.50f, 0.30f },
+    };
+    constexpr float kHintAlphas[kMaxHintMarkers] = { 0.85f, 0.70f, 0.55f };
 
     // KurenaiEngineが内部で登録しているウィンドウクラス名(Core/Window.cpp参照)。
     // KurenaiEngineBaseはHWNDを公開していないため、マウス座標変換(ScreenToClient)用に
@@ -188,6 +213,124 @@ namespace
         }
     }
 
+    // kata-analyzeのownership配列(row-major、盤面左上=index0)における(row, col)のインデックスを
+    // 求める。KurenaiGoの内部座標はrow=0が盤面下端・col=0が左端(GTPと同じ)なので変換が必要。
+    // 実機での検証結果(黒石をA19に置いてindex0付近が反応することを確認)はdocs/KurenaiGo.html参照
+    int OwnershipIndex(int row, int col, int boardSize)
+    {
+        const int rowFromTop = (boardSize - 1) - row;
+        return rowFromTop * boardSize + col;
+    }
+
+    // kata-analyzeの結果は解析対象色(ColorToMove)から見た値のため、常に黒視点に変換して扱う
+    float ToBlackWinrate(const KataGoAnalysisResult& analysis)
+    {
+        return analysis.ColorToMove == Stone::Black ? analysis.WinrateForColorToMove : 1.0f - analysis.WinrateForColorToMove;
+    }
+
+    float ToBlackOwnership(const KataGoAnalysisResult& analysis, int ownershipIndex)
+    {
+        const float value = analysis.Ownership[ownershipIndex];
+        return analysis.ColorToMove == Stone::Black ? value : -value;
+    }
+
+    // 盤の上マージンに、黒番から見た勝率で2分割した横棒を描く
+    void DrawWinrateBar(KurenaiEngine2D& renderer, TextureHandle whiteTexture, const BoardLayout& layout, float blackWinrate)
+    {
+        const float clampedWinrate = (std::max)(0.0f, (std::min)(1.0f, blackWinrate));
+        const float barWidth = layout.GridExtent;
+        const float barLeft = layout.CenterX - barWidth * 0.5f;
+        const float barY = layout.CenterY + layout.BoardExtent * 0.5f + kWinrateBarMargin + kWinrateBarHeight * 0.5f;
+
+        const float blackWidth = barWidth * clampedWinrate;
+        const float whiteWidth = barWidth - blackWidth;
+
+        if (blackWidth > 0.0f)
+        {
+            renderer.DrawSprite(
+                barLeft + blackWidth * 0.5f, barY, blackWidth, kWinrateBarHeight, 0.0f,
+                whiteTexture, kWinrateBlackR, kWinrateBlackG, kWinrateBlackB, 1.0f);
+        }
+        if (whiteWidth > 0.0f)
+        {
+            renderer.DrawSprite(
+                barLeft + blackWidth + whiteWidth * 0.5f, barY, whiteWidth, kWinrateBarHeight, 0.0f,
+                whiteTexture, kWinrateWhiteR, kWinrateWhiteG, kWinrateWhiteB, 1.0f);
+        }
+    }
+
+    // 石のない交点に、地の所有率(黒視点)に応じた色つきオーバーレイを描く(Tキーでトグル)
+    void DrawTerritoryOverlay(KurenaiEngine2D& renderer, const GoBoard& board, const BoardLayout& layout,
+        TextureHandle whiteTexture, const KataGoAnalysisResult& analysis)
+    {
+        if (analysis.Ownership.size() != static_cast<size_t>(kBoardLines) * static_cast<size_t>(kBoardLines))
+        {
+            return;
+        }
+
+        const float overlaySize = layout.LineSpacing * 0.82f;
+        for (int row = 0; row < kBoardLines; ++row)
+        {
+            for (int col = 0; col < kBoardLines; ++col)
+            {
+                if (board.At(row, col) != Stone::Empty)
+                {
+                    continue;
+                }
+
+                const float blackOwnership = ToBlackOwnership(analysis, OwnershipIndex(row, col, kBoardLines));
+                const float magnitude = std::fabs(blackOwnership);
+                if (magnitude < kTerritoryMinMagnitude)
+                {
+                    continue;
+                }
+
+                const float x = GridIndexToCoordinate(layout, layout.CenterX, col);
+                const float y = GridIndexToCoordinate(layout, layout.CenterY, row);
+                const float alpha = (std::min)(magnitude, 1.0f) * kTerritoryMaxAlpha;
+                if (blackOwnership > 0.0f)
+                {
+                    renderer.DrawSprite(x, y, overlaySize, overlaySize, 0.0f, whiteTexture,
+                        kTerritoryBlackR, kTerritoryBlackG, kTerritoryBlackB, alpha);
+                }
+                else
+                {
+                    renderer.DrawSprite(x, y, overlaySize, overlaySize, 0.0f, whiteTexture,
+                        kTerritoryWhiteR, kTerritoryWhiteG, kTerritoryWhiteB, alpha);
+                }
+            }
+        }
+    }
+
+    // 候補手の上位(最大kMaxHintMarkers件)に順位つきマーカーを描く(Hキーでトグル)
+    void DrawMoveHints(KurenaiEngine2D& renderer, const BoardLayout& layout, TextureHandle whiteTexture,
+        const KataGoAnalysisResult& analysis)
+    {
+        std::vector<AnalysisMoveInfo> sortedMoves = analysis.TopMoves;
+        std::sort(sortedMoves.begin(), sortedMoves.end(),
+            [](const AnalysisMoveInfo& a, const AnalysisMoveInfo& b) { return a.Order < b.Order; });
+
+        const float markerSize = layout.LineSpacing * 0.6f;
+        int shown = 0;
+        for (const AnalysisMoveInfo& move : sortedMoves)
+        {
+            if (shown >= kMaxHintMarkers)
+            {
+                break;
+            }
+            if (move.Row < 0 || move.Col < 0)
+            {
+                continue; // passなど盤上の座標を持たない候補は表示しない
+            }
+
+            const float x = GridIndexToCoordinate(layout, layout.CenterX, move.Col);
+            const float y = GridIndexToCoordinate(layout, layout.CenterY, move.Row);
+            renderer.DrawSprite(x, y, markerSize, markerSize, 0.0f, whiteTexture,
+                kHintColors[shown][0], kHintColors[shown][1], kHintColors[shown][2], kHintAlphas[shown]);
+            ++shown;
+        }
+    }
+
     // 対局の進行状態
     enum class TurnState
     {
@@ -224,6 +367,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         KataGoClient kataGo;
         TurnState turnState = TurnState::EngineStarting;
 
+        // 解析(kata-analyze)の最新結果。勝率表示・地合い可視化・着手ヒントが共通で使う
+        KataGoAnalysisResult latestAnalysis;
+        bool hasAnalysis = false;
+
+        // HumanToMoveへ遷移すると同時に、その局面の解析(黒=人間視点)を要求する
+        const auto enterHumanToMove = [&]()
+        {
+            turnState = TurnState::HumanToMove;
+            hasAnalysis = false;
+            kataGo.RequestAnalysis(Stone::Black);
+        };
+
         kataGo.StartAsync(
             kataGoDir / L"katago.exe",
             kataGoDir / L"model.bin.gz",
@@ -234,6 +389,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         bool prevLButtonDown = false;
         bool prevPassKeyDown = false;
         bool prevResignKeyDown = false;
+        bool prevTerritoryKeyDown = false;
+        bool prevHintKeyDown = false;
+        bool territoryOverlayEnabled = false;
+        bool hintOverlayEnabled = false;
 
         while (!renderer.ShouldClose())
         {
@@ -281,6 +440,28 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             const bool resignPressed = resignKeyDown && !prevResignKeyDown;
             prevResignKeyDown = resignKeyDown;
 
+            const bool territoryKeyDown = (GetAsyncKeyState('T') & 0x8000) != 0;
+            if (territoryKeyDown && !prevTerritoryKeyDown)
+            {
+                territoryOverlayEnabled = !territoryOverlayEnabled;
+            }
+            prevTerritoryKeyDown = territoryKeyDown;
+
+            const bool hintKeyDown = (GetAsyncKeyState('H') & 0x8000) != 0;
+            if (hintKeyDown && !prevHintKeyDown)
+            {
+                hintOverlayEnabled = !hintOverlayEnabled;
+            }
+            prevHintKeyDown = hintKeyDown;
+
+            // 解析結果のポーリング(HumanToMove遷移時にenterHumanToMove()から要求している)
+            KataGoAnalysisResult polledAnalysis;
+            if (kataGo.TryGetAnalysisResult(polledAnalysis))
+            {
+                latestAnalysis = polledAnalysis;
+                hasAnalysis = !latestAnalysis.Failed;
+            }
+
             switch (turnState)
             {
             case TurnState::EngineStarting:
@@ -290,7 +471,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     {
                         throw std::runtime_error("KataGoの起動に失敗しました: " + kataGo.LastError());
                     }
-                    turnState = TurnState::HumanToMove;
+                    enterHumanToMove();
                 }
                 break;
 
@@ -353,7 +534,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         }
                         else
                         {
-                            turnState = TurnState::HumanToMove;
+                            enterHumanToMove();
                         }
                     }
                     else if (!board.TryPlay(result.Row, result.Col, Stone::White))
@@ -365,7 +546,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     }
                     else
                     {
-                        turnState = TurnState::HumanToMove;
+                        enterHumanToMove();
                     }
                 }
                 break;
@@ -389,7 +570,19 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 
             renderer.BeginFrame(kClearColorR, kClearColorG, kClearColorB);
             DrawBoard(renderer, whiteTexture, layout);
+            if (hasAnalysis && territoryOverlayEnabled)
+            {
+                DrawTerritoryOverlay(renderer, board, layout, whiteTexture, latestAnalysis);
+            }
             DrawStones(renderer, board, layout, blackStoneTexture, whiteStoneTexture);
+            if (hasAnalysis && hintOverlayEnabled && turnState == TurnState::HumanToMove)
+            {
+                DrawMoveHints(renderer, layout, whiteTexture, latestAnalysis);
+            }
+            if (hasAnalysis)
+            {
+                DrawWinrateBar(renderer, whiteTexture, layout, ToBlackWinrate(latestAnalysis));
+            }
 
             // 手番中、カーソルが空点の交点上にあれば半透明のプレビューを表示する
             if (turnState == TurnState::HumanToMove && isHovering)
