@@ -45,15 +45,12 @@
   <PropertyGroup Label="UserMacros" />
   <!--
     出力先は本リポジトリ自身のBuild\Bin配下(KurenaiEngineとは独立)。実行に必要なもの
-    (KurenaiEngine.dll、Assets\の石テクスチャ、KataGo\のKataGo本体)はすべてPostBuildEventで
-    実行ファイルと同じフォルダへ集約する(PathUtil::ResolveAppDataPathも参照)。これにより
-    Build\Bin\<Platform>\<Config>\ フォルダごとコピーするだけで動作する。
-    なお、KurenaiEngine2D/3DはシェーダファイルをGetModuleFileNameW(nullptr, ...)、つまり
-    「実行ファイル(KurenaiGo.exe)の場所から4階層上 + KurenaiEngine\Shaders\」という固定の
-    相対パスで解決する実装になっている(KurenaiEngine\Source\Engine\KurenaiEngine2D.cpp参照)。
-    これはKurenaiEngine.dll自体の実装(エンジン側のリポジトリ)に起因する制約でこちらからは
-    変更できないため、シェーダ一式だけは実行ファイルの直下ではなくそのパス(KurenaiEngine\Shaders\、
-    submodule内の未追跡コピー)へ別途コピーしている。
+    (KurenaiEngine.dll、Shaders\、Assets\の石テクスチャ、KataGo\のKataGo本体)はすべて
+    PostBuildEventで実行ファイルと同じフォルダへ集約する(PathUtil::ResolveAppDataPathも参照)。
+    これによりBuild\Bin\<Platform>\<Config>\ フォルダごとコピーするだけで動作する。
+    KurenaiEngine2D/3DはシェーダファイルをKurenaiEngine.dll自身のフォルダ基準
+    (GetModuleHandleExWでDLL自身のモジュールを取得)で解決するため、KurenaiEngine.dllを
+    コピーする際にShadersフォルダも一緒にKurenaiGoのOutDirへコピーする必要がある。
   -->
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <OutDir>$(SolutionDir)Build\Bin\$(Platform)\$(Configuration)\</OutDir>
@@ -80,9 +77,9 @@
     <PostBuildEvent>
       <Command>xcopy /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\KurenaiEngine.dll" "$(OutDir)"
 xcopy /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\KurenaiEngine.pdb" "$(OutDir)"
+xcopy /E /I /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\Shaders" "$(OutDir)Shaders"
 xcopy /E /I /Y /D "$(ProjectDir)Assets" "$(OutDir)Assets"
-if not exist "$(OutDir)KataGo" mkdir "$(OutDir)KataGo"
-xcopy /E /I /Y /D "$(SolutionDir)KurenaiEngine\KurenaiEngine\Shaders" "$(SolutionDir)KurenaiEngine\Shaders"</Command>
+if not exist "$(OutDir)KataGo" mkdir "$(OutDir)KataGo"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -106,9 +103,9 @@ xcopy /E /I /Y /D "$(SolutionDir)KurenaiEngine\KurenaiEngine\Shaders" "$(Solutio
     <PostBuildEvent>
       <Command>xcopy /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\KurenaiEngine.dll" "$(OutDir)"
 xcopy /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\KurenaiEngine.pdb" "$(OutDir)"
+xcopy /E /I /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\Shaders" "$(OutDir)Shaders"
 xcopy /E /I /Y /D "$(ProjectDir)Assets" "$(OutDir)Assets"
-if not exist "$(OutDir)KataGo" mkdir "$(OutDir)KataGo"
-xcopy /E /I /Y /D "$(SolutionDir)KurenaiEngine\KurenaiEngine\Shaders" "$(SolutionDir)KurenaiEngine\Shaders"</Command>
+if not exist "$(OutDir)KataGo" mkdir "$(OutDir)KataGo"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
