@@ -83,8 +83,7 @@ namespace
     };
     constexpr float kHintAlphas[kMaxHintMarkers] = { 0.85f, 0.70f, 0.55f };
 
-    // 盤下の余白に表示するHUDテキストの見た目。DrawTextはASCII印字可能文字のみ対応のため
-    // (かな漢字は表示されない)、表示文言は英語表記にする
+    // 盤下の余白に表示するHUDテキストの見た目
     constexpr float kHudFontSize = 18.0f;
     constexpr float kHudColorR = 0.92f, kHudColorG = 0.92f, kHudColorB = 0.90f;
 
@@ -354,14 +353,14 @@ namespace
         std::wstring text;
         switch (turnState)
         {
-        case TurnState::EngineStarting:  text = L"Starting KataGo..."; break;
-        case TurnState::HumanToMove:     text = L"Your move (Black)"; break;
-        case TurnState::AIThinking:      text = L"KataGo is thinking..."; break;
-        case TurnState::WaitingForScore: text = L"Computing final score..."; break;
-        case TurnState::GameOver:        text = L"Game over"; break;
+        case TurnState::EngineStarting:  text = L"KataGo起動中..."; break;
+        case TurnState::HumanToMove:     text = L"あなたの番です(黒)"; break;
+        case TurnState::AIThinking:      text = L"KataGo思考中..."; break;
+        case TurnState::WaitingForScore: text = L"終局判定中..."; break;
+        case TurnState::GameOver:        text = L"対局終了"; break;
         }
-        text += L"   Captures B:" + std::to_wstring(board.CapturesBy(Stone::Black)) +
-            L" W:" + std::to_wstring(board.CapturesBy(Stone::White));
+        text += L"   アゲハマ 黒:" + std::to_wstring(board.CapturesBy(Stone::Black)) +
+            L" 白:" + std::to_wstring(board.CapturesBy(Stone::White));
         return text;
     }
 
