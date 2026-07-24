@@ -37,6 +37,9 @@ namespace KurenaiGo
         int Size() const { return m_Size; }
         int ConsecutivePasses() const { return m_ConsecutivePasses; }
 
+        // アゲハマ(その色が相手から取った石の数)
+        int CapturesBy(Stone color) const { return color == Stone::Black ? m_BlackCaptures : m_WhiteCaptures; }
+
     private:
         int Index(int row, int col) const { return row * m_Size + col; }
         bool IsOnBoard(int row, int col) const;
@@ -48,6 +51,8 @@ namespace KurenaiGo
         int m_Size;
         std::vector<Stone> m_Cells;
         int m_ConsecutivePasses = 0;
+        int m_BlackCaptures = 0;
+        int m_WhiteCaptures = 0;
 
         // シンプルコウ: 直前の手が「相手の石をちょうど1つ取り、打った石自身が呼吸点1つだけの
         // 単独石になる」形だった場合、その取られた地点への即座の再着手を次の1手だけ禁止する

@@ -149,6 +149,11 @@ namespace KurenaiGo
             return false;
         }
 
+        if (!capturedStones.empty())
+        {
+            (color == Stone::Black ? m_BlackCaptures : m_WhiteCaptures) += static_cast<int>(capturedStones.size());
+        }
+
         // シンプルコウの形(相手を1つだけ取り、打った石が呼吸点1つの単独石で、
         // その呼吸点がちょうど今取った地点)なら、その地点への即座の再着手を禁止する
         if (capturedStones.size() == 1 && ownGroup.size() == 1 &&

@@ -81,6 +81,11 @@ namespace
     };
     constexpr float kHintAlphas[kMaxHintMarkers] = { 0.85f, 0.70f, 0.55f };
 
+    // 盤下の余白に表示するHUDテキストの見た目。DrawTextはASCII印字可能文字のみ対応のため
+    // (かな漢字は表示されない)、表示文言は英語表記にする
+    constexpr float kHudFontSize = 18.0f;
+    constexpr float kHudColorR = 0.92f, kHudColorG = 0.92f, kHudColorB = 0.90f;
+
     const wchar_t* kWindowTitle = L"KurenaiGo";
 
     // 現在のウィンドウサイズから盤のレイアウト(中心・格子の一辺・目の間隔)を求める
@@ -336,6 +341,33 @@ namespace
         WaitingForScore, // 両者パス後、final_score応答待ち
         GameOver,
     };
+
+    // 盤下のHUDに表示する手番状態・アゲハマ数のテキストを組み立てる
+    std::wstring BuildStatusText(TurnState turnState, const GoBoard& board)
+    {
+        std::wstring text;
+        switch (turnState)
+        {
+        case TurnState::EngineStarting:  text = L"Starting KataGo..."; break;
+        case TurnState::HumanToMove:     text = L"Your move (Black)"; break;
+        case TurnState::AIThinking:      text = L"KataGo is thinking..."; break;
+        case TurnState::WaitingForScore: text = L"Computing final score..."; break;
+        case TurnState::GameOver:        text = L"Game over"; break;
+        }
+        text += L"   Captures B:" + std::to_wstring(board.CapturesBy(Stone::Black)) +
+            L" W:" + std::to_wstring(board.CapturesBy(Stone::White));
+        return text;
+    }
+
+    // 盤の下マージンにHUDテキストを描画する
+    void DrawHud(KurenaiEngine2D& renderer, const BoardLayout& layout, TurnState turnState, const GoBoard& board)
+    {
+        const float hudX = layout.CenterX - layout.GridExtent * 0.5f;
+        const float bottomMarginCenterY = (layout.CenterY - layout.BoardExtent * 0.5f) * 0.5f;
+        const float hudY = bottomMarginCenterY - kHudFontSize * 0.5f;
+        renderer.DrawText(hudX, hudY, BuildStatusText(turnState, board), kHudFontSize,
+            kHudColorR, kHudColorG, kHudColorB, 1.0f);
+    }
 }
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
@@ -557,6 +589,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             {
                 DrawWinrateBar(renderer, whiteTexture, layout, ToBlackWinrate(latestAnalysis));
             }
+            DrawHud(renderer, layout, turnState, board);
 
             // 手番中、カーソルが空点の交点上にあれば半透明のプレビューを表示する
             if (turnState == TurnState::HumanToMove && isHovering)
