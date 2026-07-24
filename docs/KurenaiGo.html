@@ -183,26 +183,24 @@ Y-upです(<code>DrawSprite</code>の<code>x, y</code>はスプライト中心)�
 <section id="rendering">
 <h2>3. 盤・石の描画</h2>
 <p>
-<code>KurenaiEngine2D::DrawSprite</code>は矩形(回転可能)のスプライトしか描画できないため、
-盤面・格子線・星は矩形スプライトの組み合わせで表現しています(円形のテクスチャは使っていません)。
+盤面(木目)は<code>CreateSolidColorTexture(255, 255, 255, 255)</code>で作成した白1色のテクスチャを
+木目色でティントした矩形スプライトで描画します。格子線・星・石はいずれも
+<code>KurenaiEngine2D::DrawLine</code>/<code>DrawCircle</code>で直接描画しており、円形テクスチャを
+事前生成する必要はありません(かつては<code>Tools/generate_stone_textures.ps1</code>で石の
+PNGを生成していましたが、<code>DrawCircle</code>の追加に伴い削除しました)。
 </p>
 <table>
 <thead><tr><th>要素</th><th>描画方法</th></tr></thead>
 <tbody>
 <tr><td>盤面(木目)</td><td>1x1の白テクスチャを木目色でティントした正方形スプライト1枚</td></tr>
-<tr><td>格子線(縦横19本ずつ、計38本)</td><td>細長い矩形スプライト。横線は幅=<code>GridExtent</code>・高さ=線の太さ、縦線はその逆</td></tr>
-<tr><td>星(hoshi、3x3=9箇所)</td><td>格子の交点(0-indexedで3, 9, 15)に小さな正方形スプライトを配置(円ではなく点の代用)</td></tr>
-<tr><td>石(黒・白)</td><td><code>Assets/stone_black.png</code> / <code>stone_white.png</code>(アルファ付きPNG)を
-<code>LoadTexture</code>で読み込み、<code>GoBoard</code>の石がある交点に配置</td></tr>
+<tr><td>格子線(縦横19本ずつ、計38本)</td><td><code>DrawLine</code>で格子の端から端まで1本ずつ描画</td></tr>
+<tr><td>星(hoshi、3x3=9箇所)</td><td>格子の交点(0-indexedで3, 9, 15)に<code>DrawCircle</code>で小さな点を描画</td></tr>
+<tr><td>石(黒・白)</td><td><code>GoBoard</code>の石がある交点に<code>DrawCircle</code>で塗り円を描画</td></tr>
 </tbody>
 </table>
 <p>
-盤面・格子線・星は<code>CreateSolidColorTexture(255, 255, 255, 255)</code>で作成した白1色の
-テクスチャを1つだけ使い回し、<code>DrawSprite</code>の<code>r, g, b, a</code>引数(乗算ティント)で
-色を出し分けています(<code>Samples/Sample2D</code>と同じ手法)。石だけは矩形スプライトでは
-円に見せられないため、<code>Tools/generate_stone_textures.ps1</code>(GDI+のアンチエイリアス付き
-楕円描画)で事前生成したPNGを実テクスチャとして読み込んでいます。人間の手番中、カーソルに
-最も近い空点交点には半透明の白石テクスチャ(タイントで薄いグレー・半透明化)をプレビュー表示します。
+人間の手番中、カーソルに最も近い空点交点には<code>DrawCircle</code>で半透明のプレビュー円を
+表示します。
 </p>
 </section>
 

@@ -45,12 +45,13 @@
   <PropertyGroup Label="UserMacros" />
   <!--
     出力先は本リポジトリ自身のBuild\Bin配下(KurenaiEngineとは独立)。実行に必要なもの
-    (KurenaiEngine.dll、Shaders\、Assets\の石テクスチャ、KataGo\のKataGo本体)はすべて
-    PostBuildEventで実行ファイルと同じフォルダへ集約する(PathUtil::ResolveAppDataPathも参照)。
-    これによりBuild\Bin\<Platform>\<Config>\ フォルダごとコピーするだけで動作する。
-    KurenaiEngine2D/3DはシェーダファイルをKurenaiEngine.dll自身のフォルダ基準
-    (GetModuleHandleExWでDLL自身のモジュールを取得)で解決するため、KurenaiEngine.dllを
-    コピーする際にShadersフォルダも一緒にKurenaiGoのOutDirへコピーする必要がある。
+    (KurenaiEngine.dll、Shaders\、KataGo\のKataGo本体)はすべてPostBuildEventで実行ファイルと
+    同じフォルダへ集約する(PathUtil::ResolveAppDataPathも参照)。これによりBuild\Bin\<Platform>\
+    <Config>\ フォルダごとコピーするだけで動作する。KurenaiEngine2D/3Dはシェーダファイルを
+    KurenaiEngine.dll自身のフォルダ基準(GetModuleHandleExWでDLL自身のモジュールを取得)で
+    解決するため、KurenaiEngine.dllをコピーする際にShadersフォルダも一緒にKurenaiGoのOutDirへ
+    コピーする必要がある。石・格子線・星はDrawCircle/DrawLineで直接描画するため、
+    テクスチャアセット(Assets\)は使用していない。
   -->
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <OutDir>$(SolutionDir)Build\Bin\$(Platform)\$(Configuration)\</OutDir>
@@ -78,7 +79,6 @@
       <Command>xcopy /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\KurenaiEngine.dll" "$(OutDir)"
 xcopy /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\KurenaiEngine.pdb" "$(OutDir)"
 xcopy /E /I /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\Shaders" "$(OutDir)Shaders"
-xcopy /E /I /Y /D "$(ProjectDir)Assets" "$(OutDir)Assets"
 if not exist "$(OutDir)KataGo" mkdir "$(OutDir)KataGo"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
@@ -104,7 +104,6 @@ if not exist "$(OutDir)KataGo" mkdir "$(OutDir)KataGo"</Command>
       <Command>xcopy /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\KurenaiEngine.dll" "$(OutDir)"
 xcopy /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\KurenaiEngine.pdb" "$(OutDir)"
 xcopy /E /I /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\Shaders" "$(OutDir)Shaders"
-xcopy /E /I /Y /D "$(ProjectDir)Assets" "$(OutDir)Assets"
 if not exist "$(OutDir)KataGo" mkdir "$(OutDir)KataGo"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>

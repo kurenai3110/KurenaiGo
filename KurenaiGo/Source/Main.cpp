@@ -59,11 +59,13 @@ namespace
     constexpr float kClearColorG = 0.12f;
     constexpr float kClearColorB = 0.14f;
 
+    // 黒石・白石の色(DrawCircleで直接描画する。勝率バーの黒/白領域にも同じ色を使い回す)
+    constexpr float kBlackStoneR = 0.05f, kBlackStoneG = 0.05f, kBlackStoneB = 0.05f;
+    constexpr float kWhiteStoneR = 0.95f, kWhiteStoneG = 0.95f, kWhiteStoneB = 0.92f;
+
     // 勝率バー(黒番から見た勝率で2色に分割する横棒)の見た目
     constexpr float kWinrateBarHeight = 18.0f;
     constexpr float kWinrateBarMargin = 6.0f; // 盤の上端からバーまでの隙間
-    constexpr float kWinrateBlackR = 0.05f, kWinrateBlackG = 0.05f, kWinrateBlackB = 0.05f;
-    constexpr float kWinrateWhiteR = 0.95f, kWinrateWhiteG = 0.95f, kWinrateWhiteB = 0.92f;
 
     // 地合い可視化(Tキーでトグル)の見た目。黒地=青系、白地=赤系のオーバーレイ
     constexpr float kTerritoryBlackR = 0.25f, kTerritoryBlackG = 0.45f, kTerritoryBlackB = 0.95f;
@@ -158,44 +160,42 @@ namespace
             whiteTexture, kBoardColorR, kBoardColorG, kBoardColorB, 1.0f);
 
         const float lineThickness = (std::max)(1.5f, layout.LineSpacing * 0.035f);
+        const float halfGrid = layout.GridExtent * 0.5f;
 
         // 横線(各行ごとに1本、盤の幅いっぱいに伸ばす)
         for (int row = 0; row < kBoardLines; ++row)
         {
             const float y = GridIndexToCoordinate(layout, layout.CenterY, row);
-            renderer.DrawSprite(
-                layout.CenterX, y, layout.GridExtent, lineThickness, 0.0f,
-                whiteTexture, kLineColorR, kLineColorG, kLineColorB, 1.0f);
+            renderer.DrawLine(
+                layout.CenterX - halfGrid, y, layout.CenterX + halfGrid, y, lineThickness,
+                kLineColorR, kLineColorG, kLineColorB, 1.0f);
         }
 
         // 縦線(各列ごとに1本、盤の高さいっぱいに伸ばす)
         for (int col = 0; col < kBoardLines; ++col)
         {
             const float x = GridIndexToCoordinate(layout, layout.CenterX, col);
-            renderer.DrawSprite(
-                x, layout.CenterY, lineThickness, layout.GridExtent, 0.0f,
-                whiteTexture, kLineColorR, kLineColorG, kLineColorB, 1.0f);
+            renderer.DrawLine(
+                x, layout.CenterY - halfGrid, x, layout.CenterY + halfGrid, lineThickness,
+                kLineColorR, kLineColorG, kLineColorB, 1.0f);
         }
 
         // 星(hoshi)。3x3の標準的な交点に小さな点を描く
-        const float hoshiSize = layout.LineSpacing * 0.22f;
+        const float hoshiRadius = layout.LineSpacing * 0.11f;
         for (int hoshiRow : kHoshiIndices)
         {
             const float y = GridIndexToCoordinate(layout, layout.CenterY, hoshiRow);
             for (int hoshiCol : kHoshiIndices)
             {
                 const float x = GridIndexToCoordinate(layout, layout.CenterX, hoshiCol);
-                renderer.DrawSprite(
-                    x, y, hoshiSize, hoshiSize, 0.0f,
-                    whiteTexture, kLineColorR, kLineColorG, kLineColorB, 1.0f);
+                renderer.DrawCircle(x, y, hoshiRadius, kLineColorR, kLineColorG, kLineColorB, 1.0f);
             }
         }
     }
 
-    void DrawStones(KurenaiEngine2D& renderer, const GoBoard& board, const BoardLayout& layout,
-        TextureHandle blackStoneTexture, TextureHandle whiteStoneTexture)
+    void DrawStones(KurenaiEngine2D& renderer, const GoBoard& board, const BoardLayout& layout)
     {
-        const float stoneSize = layout.LineSpacing * 0.92f;
+        const float stoneRadius = layout.LineSpacing * 0.46f;
         for (int row = 0; row < kBoardLines; ++row)
         {
             for (int col = 0; col < kBoardLines; ++col)
@@ -208,8 +208,14 @@ namespace
 
                 const float x = GridIndexToCoordinate(layout, layout.CenterX, col);
                 const float y = GridIndexToCoordinate(layout, layout.CenterY, row);
-                const TextureHandle texture = (stone == Stone::Black) ? blackStoneTexture : whiteStoneTexture;
-                renderer.DrawSprite(x, y, stoneSize, stoneSize, 0.0f, texture, 1.0f, 1.0f, 1.0f, 1.0f);
+                if (stone == Stone::Black)
+                {
+                    renderer.DrawCircle(x, y, stoneRadius, kBlackStoneR, kBlackStoneG, kBlackStoneB, 1.0f);
+                }
+                else
+                {
+                    renderer.DrawCircle(x, y, stoneRadius, kWhiteStoneR, kWhiteStoneG, kWhiteStoneB, 1.0f);
+                }
             }
         }
     }
@@ -250,13 +256,13 @@ namespace
         {
             renderer.DrawSprite(
                 barLeft + blackWidth * 0.5f, barY, blackWidth, kWinrateBarHeight, 0.0f,
-                whiteTexture, kWinrateBlackR, kWinrateBlackG, kWinrateBlackB, 1.0f);
+                whiteTexture, kBlackStoneR, kBlackStoneG, kBlackStoneB, 1.0f);
         }
         if (whiteWidth > 0.0f)
         {
             renderer.DrawSprite(
                 barLeft + blackWidth + whiteWidth * 0.5f, barY, whiteWidth, kWinrateBarHeight, 0.0f,
-                whiteTexture, kWinrateWhiteR, kWinrateWhiteG, kWinrateWhiteB, 1.0f);
+                whiteTexture, kWhiteStoneR, kWhiteStoneG, kWhiteStoneB, 1.0f);
         }
     }
 
@@ -378,14 +384,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     int exitCode = 0;
     try
     {
-        const std::filesystem::path assetsDir = ResolveAppDataPath(L"Assets");
         const std::filesystem::path kataGoDir = ResolveAppDataPath(L"KataGo");
 
         KurenaiEngine2D renderer(kWindowTitle, kWindowWidth, kWindowHeight, GraphicsAPI::DX11);
 
         const TextureHandle whiteTexture = renderer.CreateSolidColorTexture(255, 255, 255, 255);
-        const TextureHandle blackStoneTexture = renderer.LoadTexture((assetsDir / L"stone_black.png").wstring(), true);
-        const TextureHandle whiteStoneTexture = renderer.LoadTexture((assetsDir / L"stone_white.png").wstring(), true);
 
         GoBoard board(kBoardLines);
         KataGoClient kataGo;
@@ -580,7 +583,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             {
                 DrawTerritoryOverlay(renderer, board, layout, whiteTexture, latestAnalysis);
             }
-            DrawStones(renderer, board, layout, blackStoneTexture, whiteStoneTexture);
+            DrawStones(renderer, board, layout);
             if (hasAnalysis && hintOverlayEnabled && turnState == TurnState::HumanToMove)
             {
                 DrawMoveHints(renderer, layout, whiteTexture, latestAnalysis);
@@ -596,8 +599,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             {
                 const float x = GridIndexToCoordinate(layout, layout.CenterX, hoverCol);
                 const float y = GridIndexToCoordinate(layout, layout.CenterY, hoverRow);
-                const float previewSize = layout.LineSpacing * 0.92f;
-                renderer.DrawSprite(x, y, previewSize, previewSize, 0.0f, whiteStoneTexture, 0.2f, 0.2f, 0.2f, 0.35f);
+                const float previewRadius = layout.LineSpacing * 0.46f;
+                renderer.DrawCircle(x, y, previewRadius, 0.2f, 0.2f, 0.2f, 0.35f);
             }
 
             renderer.EndFrame(true);

@@ -49,17 +49,12 @@ KurenaiGo/
     GoBoard.h/.cpp           囲碁のルール(合法手判定・捕獲・シンプルコウ)
     KataGoClient.h/.cpp      KataGoを子プロセスとして起動しGTPで通信するクライアント
     PathUtil.h/.cpp          exeと同じフォルダにあるファイル/フォルダを解決するヘルパー
-  Assets/
-    stone_black.png, stone_white.png  石のテクスチャ(Tools/generate_stone_textures.ps1で生成。
-                                       ビルド時にexeと同じフォルダへコピーされる)
-  Tools/
-    generate_stone_textures.ps1       石テクスチャの再生成スクリプト
 KurenaiEngine/              描画エンジン(Git submodule)
 Build/
   Bin/x64/Debug/             ビルド成果物の出力先(Git管理対象外)
     KurenaiGo.exe            本体
     KurenaiEngine.dll        ビルド後処理でコピーされる
-    Assets/                  ビルド後処理でコピーされる石テクスチャ
+    Shaders/                 ビルド後処理でコピーされるシェーダ一式(KurenaiEngine.dllが実行時に参照)
     KataGo/                  KataGo本体・ニューラルネット(手動配置。下記セットアップ参照)
 docs/
   KurenaiGo.html            本アプリのドキュメント(盤のレイアウト・座標系・対局アーキテクチャ)
@@ -100,9 +95,10 @@ MSBuild KurenaiGo.sln /p:Configuration=Debug /p:Platform=x64
 `KurenaiGo.vcxproj` は `KurenaiEngine.vcxproj` をプロジェクト参照しているため、上記コマンド一回で
 KurenaiEngine.dllも含めてビルドされます。`KurenaiGo.exe` は本リポジトリ直下の
 `Build\Bin\x64\Debug\` に出力され、ビルド後処理(PostBuildEvent)で `KurenaiEngine.dll`(と`.pdb`)・
-石のテクスチャ(`Assets\`)が同じフォルダへコピーされ、空の `KataGo\` フォルダも作成されます
-(次の手順で中身を配置する)。実行に必要なものはすべて `Build\Bin\x64\Debug\` フォルダ1つに
-集約されるため、このフォルダごとコピーすれば他の場所でも実行できます。
+`Shaders\`(KurenaiEngine.dllが実行時に参照するシェーダ一式)が同じフォルダへコピーされ、
+空の `KataGo\` フォルダも作成されます(次の手順で中身を配置する)。実行に必要なものはすべて
+`Build\Bin\x64\Debug\` フォルダ1つに集約されるため、このフォルダごとコピーすれば他の場所でも
+実行できます。
 
 ### 4. KataGoの配置
 
