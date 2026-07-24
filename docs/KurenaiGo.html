@@ -302,10 +302,21 @@ falseに戻ってしまう(ホバー判定だけが効かなくなる)ことを�
 現在の<code>TurnState</code>とアゲハマ数(<code>GoBoard::CapturesBy</code>)は、盤の下マージンに
 <code>DrawText</code>で常時表示します(<code>DrawHud</code>、<code>BuildStatusText</code>)。
 <code>DrawText</code>はかな漢字を含むUnicode文字に対応しているため、表示文言は日本語です。
-対局終了・投了・通信エラーのような割り込みが必要な通知は、既存のエラーダイアログ
-(<code>MessageBoxA</code>)のまま残しています(進行中の状態はHUD、区切りとなるイベントは
-ダイアログという役割分担)。
+対局終了・投了・通信エラーのような割り込みが必要な通知は、既存のエラーダイアログのまま
+残しています(進行中の状態はHUD、区切りとなるイベントはダイアログという役割分担)。
 </p>
+<div class="note">
+<p>
+<strong>文字化けの修正</strong>: 本プロジェクトは<code>/utf-8</code>オプションでコンパイルしており、
+ナロー文字列リテラル(<code>"..."</code>)はUTF-8でエンコードされる。これを<code>MessageBoxA</code>に
+そのまま渡すと、ANSI版はシステムのコードページ(日本語環境では多くの場合Shift-JIS)で解釈するため
+日本語部分が文字化けする。<code>Main.cpp</code>の<code>ShowMessageBoxUtf8</code>で
+<code>MultiByteToWideChar(CP_UTF8, ...)</code>によりUTF-16へ変換してから<code>MessageBoxW</code>へ
+渡すことでこれを解消している。<code>KataGoClient</code>の例外メッセージ(<code>LastError()</code>)や
+<code>std::exception::what()</code>も同様にUTF-8として扱われるため、すべての通知はこのヘルパー
+経由で表示している。
+</p>
+</div>
 </section>
 
 <section id="katago">

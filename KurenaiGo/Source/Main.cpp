@@ -30,6 +30,26 @@ using namespace KurenaiGo;
 
 namespace
 {
+    // ソースは/utf-8オプションでコンパイルしているため、ナロー文字列リテラル("...")はUTF-8で
+    // エンコードされる。MessageBoxAにそのまま渡すと、ANSI版はシステムのコードページ(日本語環境では
+    // Shift-JIS)で解釈してしまい日本語部分が文字化けするため、UTF-16に変換してMessageBoxWへ渡す
+    std::wstring Utf8ToWide(const std::string& utf8)
+    {
+        if (utf8.empty())
+        {
+            return std::wstring();
+        }
+        const int length = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+        std::wstring wide(static_cast<size_t>(length), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), wide.data(), length);
+        return wide;
+    }
+
+    void ShowMessageBoxUtf8(const std::string& utf8Text, const std::string& utf8Caption, UINT type)
+    {
+        MessageBoxW(nullptr, Utf8ToWide(utf8Text).c_str(), Utf8ToWide(utf8Caption).c_str(), type);
+    }
+
     // 盤の目の数(19路盤)
     constexpr int kBoardLines = 19;
 
@@ -490,7 +510,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 if (resignPressed)
                 {
                     renderer.PlaySound(gameEndSound);
-                    MessageBoxA(nullptr, "投了しました。KataGoの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
+                    ShowMessageBoxUtf8("投了しました。KataGoの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
                     turnState = TurnState::GameOver;
                 }
                 else if (passPressed)
@@ -529,13 +549,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     if (result.Failed)
                     {
                         const std::string message = "KataGoとの通信でエラーが発生しました:\n" + kataGo.LastError();
-                        MessageBoxA(nullptr, message.c_str(), "KurenaiGo - KataGoエラー", MB_OK | MB_ICONERROR);
+                        ShowMessageBoxUtf8(message, "KurenaiGo - KataGoエラー", MB_OK | MB_ICONERROR);
                         turnState = TurnState::GameOver;
                     }
                     else if (result.IsResign)
                     {
                         renderer.PlaySound(gameEndSound);
-                        MessageBoxA(nullptr, "KataGoが投了しました。あなたの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
+                        ShowMessageBoxUtf8("KataGoが投了しました。あなたの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
                         turnState = TurnState::GameOver;
                     }
                     else if (result.IsPass)
@@ -554,7 +574,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     else if (!board.TryPlay(result.Row, result.Col, Stone::White))
                     {
                         // KataGoは常に合法手を返す前提のため、ここに来るのは想定外の異常事態
-                        MessageBoxA(nullptr, "KataGoの着手を反映できませんでした(想定外の座標)。",
+                        ShowMessageBoxUtf8("KataGoの着手を反映できませんでした(想定外の座標)。",
                             "KurenaiGo - エラー", MB_OK | MB_ICONERROR);
                         turnState = TurnState::GameOver;
                     }
@@ -574,7 +594,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 {
                     renderer.PlaySound(gameEndSound);
                     const std::string message = "対局終了\n結果: " + score;
-                    MessageBoxA(nullptr, message.c_str(), "KurenaiGo - 対局終了", MB_OK | MB_ICONINFORMATION);
+                    ShowMessageBoxUtf8(message, "KurenaiGo - 対局終了", MB_OK | MB_ICONINFORMATION);
                     turnState = TurnState::GameOver;
                 }
                 break;
@@ -617,7 +637,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     {
         std::ofstream log("error.log", std::ios::app);
         log << e.what() << std::endl;
-        MessageBoxA(nullptr, e.what(), "KurenaiGo - エラー", MB_OK | MB_ICONERROR);
+        ShowMessageBoxUtf8(e.what(), "KurenaiGo - エラー", MB_OK | MB_ICONERROR);
         exitCode = 1;
     }
 
