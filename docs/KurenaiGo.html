@@ -380,7 +380,7 @@ GTPの座標は列がA〜T(<code>I</code>を除く)、行が盤の下端から1�
 <table>
 <thead><tr><th>コマンド</th><th>用途</th></tr></thead>
 <tbody>
-<tr><td><code>boardsize 19</code> / <code>clear_board</code> / <code>komi 7.5</code> / <code>time_settings 0 5 1</code></td><td>起動直後のハンドシェイク(<code>StartAsync</code>)</td></tr>
+<tr><td><code>boardsize &lt;9|13|19&gt;</code> / <code>clear_board</code> / <code>komi 6.5</code> / <code>time_settings 0 5 1</code></td><td>起動直後のハンドシェイク(<code>StartAsync</code>)。<code>boardsize</code>は選んだ盤の大きさ(10.5節参照)</td></tr>
 <tr><td><code>play &lt;B|W&gt; &lt;vertex|pass&gt;</code></td><td>人間の着手・パスをKataGo側の盤面にも反映する</td></tr>
 <tr><td><code>genmove &lt;B|W&gt;</code></td><td>KataGoに着手を生成させる。応答は着手・<code>pass</code>・<code>resign</code>のいずれか</td></tr>
 <tr><td><code>final_score</code></td><td>両者パス後の結果(例: <code>B+3.5</code>)取得</td></tr>
