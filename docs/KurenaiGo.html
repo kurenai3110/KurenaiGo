@@ -724,26 +724,42 @@ M5時点では「体感の起動待ち時間を減らす」ため、<code>kataGo
 <code>ChoosingGameMode</code>の前に<code>ChoosingBoardSize</code>を追加した際も、
 <code>startNewGame</code>の戻り先を<code>ChoosingBoardSize</code>に変えるだけで済んだ)。
 </p>
-<h3>11.2 レーティング→強さ(maxVisits)の写像(Human SLモデル未配置時のフォールバック)</h3>
-<pre><code>constexpr int kMinAiVisits = 20;    // 弱め
-constexpr int kMaxAiVisits = 500;   // gtp.cfgの元の既定値をそのまま上限に使う
-constexpr double kAiStrengthScalingMinRating = 1000.0; // これ以下はkMinAiVisits
-constexpr double kAiStrengthScalingMaxRating = 2000.0; // これ以上はkMaxAiVisits</code></pre>
+<h3>11.2 レーティング→強さ(maxVisits)の写像(廃止済み。11.6.4節参照)</h3>
+<div class="note">
 <p>
-目標レーティングをこの範囲で線形補間して<code>maxVisits</code>を求める
-(<code>ComputeMaxVisitsForRating</code>、<code>Main.cpp</code>)。レート戦の目標レーティングは
-常に<code>CurrentUserRating().Rating</code>(現在選択中の盤の大きさでの自分のレーティングと
+<strong>この節のコードは削除済み</strong>: 以下は開発過程の記録であり、現在の
+<code>Main.cpp</code>には存在しない。当初はHuman SLモデル未配置時に<code>maxVisits</code>の
+線形補間だけで強さを調整するフォールバックを実装していたが、11.6.4節の理由により
+フォールバックという設計自体を廃止し、Human SLモデルが無い場合は対局を開始できない仕様に
+変更したため、このコードは丸ごと削除した。
+</p>
+</div>
+<pre><code>// 削除済み(かつてのフォールバック用コード)
+constexpr int kMinAiVisits = 20;    // 弱め
+constexpr int kMaxAiVisits = 500;   // gtp.cfgの元の既定値をそのまま上限に使う
+constexpr double kAiStrengthScalingMinRating = RatingForRankIndex(kHumanSLMinRankIndex); // 20級
+constexpr double kAiStrengthScalingMaxRating = RatingForRankIndex(kHumanSLMaxRankIndex); // 9段</code></pre>
+<p>
+目標レーティングをこの範囲で線形補間して<code>maxVisits</code>を求める設計だった
+(<code>ComputeMaxVisitsForRating</code>)。レート戦の目標レーティングは常に
+<code>CurrentUserRating().Rating</code>(現在選択中の盤の大きさでの自分のレーティングと
 互角の相手にする設計、10.5節参照)。
 </p>
 <div class="note">
 <p>
-<strong><code>maxVisits</code>と実際の強さの対応は較正されていない目安</strong>: 探索visits数と
-対局相手としての実際の強さの対応関係は、ハードウェア・局面の複雑さ・ネットワークに依存し
-普遍的な換算式は存在しない。このため上記の範囲・写像は「妥当だと考えられる調整可能な目安」で
-あり、科学的に較正された対応表ではない(10章のレーティング自体が実世界の段級位を表さないのと
-同じ立場)。この写像は現在、Human SLモデル(11.6節)が使えない場合(未配置時)専用の
-フォールバックとして使われている。通常はHuman SLモデルによる段級位ベースの強さ決定
-(11.6節)が優先される。
+<strong>不具合修正から仕様変更に至った経緯</strong>: 当初このスケーリング範囲は
+<code>1000.0</code>〜<code>2000.0</code>という固定値だったが、これは11.6節の段級位換算
+(1段=レーティング1000)を導入する前、初期レーティング1500を基準にしていた頃の名残だった。
+新しい換算では20級〜1級のレーティングは約37〜903にしかならず、すべて<code>1000.0</code>未満に
+収まってしまうため、カジュアル対局で20級〜1級のどれを選んでも<code>maxVisits</code>が一律20
+(<code>kMinAiVisits</code>)にクランプされ、級位帯の強さ選択が実質的にまったく効かない状態に
+なっていた。実機検証(<code>gtp_logs</code>の<code>Config override: maxVisits = ...</code>行を
+確認)で20級選択時・1級選択時ともに<code>maxVisits = 20</code>と記録されることを確認し、この
+不具合を特定した。まずはスケーリング範囲をカジュアルUIで実際に選べる範囲(20級〜9段の理論
+レーティング)に一致させて修正し、実機検証で20級選択時に<code>maxVisits = 20</code>、1級選択時に
+<code>maxVisits = 228</code>と段階ごとに異なる値が渡ることを確認した。しかしこの数値修正では
+「探索回数を絞ってもKataGoの政策ネット自体の一手の質が高いまま」という11.6節冒頭の根本課題は
+解決しないため、フォールバックという設計自体を廃止し11.6.4節のゲーティングへ変更した。
 </p>
 </div>
 <h3>11.3 初期レーティング決定(プレースメント)モード</h3>
@@ -760,7 +776,7 @@ constexpr double kAiStrengthScalingMaxRating = 2000.0; // これ以上はkMaxAiV
 <p>
 対局回数0(<code>CurrentUserRating().GamesPlayed == 0</code>、盤の大きさごとに別々に判定、
 10.5節参照)のままレート戦を始めた場合のみ発動する(有効化されていれば)。強さの決め方自体は
-11.2節と同じ。特別なのは、対局<strong>中</strong>にレーティング
+11.6節のHuman SLモデルによる段級位ベースの強さ決定と同じ。特別なのは、対局<strong>中</strong>にレーティング
 推定値を追跡し、収束したら対局の結果を待たずにその時点で確定する点である。
 </p>
 <p>
@@ -887,7 +903,9 @@ KEY=VALUE,KEY=VALUE,...</code>でコマンドライン上書きできる」と�
 再現するもの(同梱の<code>gtp_human5k_example.cfg</code>参照)。導入済みのKataGo実行ファイルは
 <code>v1.16.5</code>(<code>-human-model</code>が入った<code>v1.15.0</code>以降)であることを
 実機ログ(<code>katago_stderr.log</code>)で確認済み。盤の大きさ(9路/13路/19路)を問わず、
-Human SLモデルファイルが配置されていれば常にこちらを優先して使う。
+このHuman SLモデルを使う。11.6.4節で述べる通り、モデルファイルが未配置の場合は
+<strong>対局そのものを開始できない</strong>ようにしている(<code>maxVisits</code>のみの
+調整では級位帯の強さがほとんど差別化できないため、フォールバックとしては採用しない設計とした)。
 </p>
 <h4>11.6.1 レーティング↔段級位インデックスの変換</h4>
 <p>
@@ -948,9 +966,48 @@ KataGoの<code>humanSLProfile</code>が実際にサポートするのは20級〜
 <code>humanSLChosenMovePiklLambda=100000000</code>・<code>useLcbForSelection=false</code>・
 <code>rootNumSymmetriesToSample=2</code>・<code>chosenMoveTemperature*</code>系(いずれも同梱
 <code>gtp_human5k_example.cfg</code>の値を踏襲)を<code>maxVisits=40</code>とあわせてカンマ区切りで
-付与する。空文字列の場合(Human SLモデル未配置時)は<code>maxVisits=&lt;レーティングから計算した値&gt;</code>
-のみを付与する従来方式に完全にフォールバックする。
+付与する。<code>humanSLProfile</code>が空文字列になる呼び出しは11.6.4節のゲーティングにより
+実際には発生しない(<code>beginGameWithTargetRating</code>は常にHuman SLプロファイルを
+組み立てる。空文字列を渡すレガシー経路自体は<code>KataGoClient</code>のAPIとして残っているが、
+<code>Main.cpp</code>側からは使われない)。
 </p>
+<h4>11.6.4 Human SLモデル未配置時は対局不可にするゲーティング</h4>
+<p>
+当初はHuman SLモデル未配置時に11.2節の<code>maxVisits</code>のみの方式へフォールバックする
+設計だったが、後述の実機検証(11.2節参照)でこのフォールバックが20級〜1級のほぼ全域で
+<code>maxVisits</code>を最小値に丸めてしまい強さ選択が実質的に機能しない不具合を発見した。
+この不具合は数値の修正で改善できるが、そもそも探索回数だけの調整では「一手ごとの質の高さ」
+自体は変わらないため、Human SLモデルが目指す人間らしい打ち筋の再現にはならない。そのため
+フォールバックという設計自体をやめ、<strong>Human SLモデルが無い場合は対局を開始できない</strong>
+仕様に変更した。
+</p>
+<pre><code>enum class TurnState
+{
+    HumanModelMissing, // Human SLモデルが未配置のため対局不可。起動時のみ判定する
+    ChoosingBoardSize,
+    ...
+};
+
+const bool humanModelAvailable = std::filesystem::exists(humanModelPath);
+TurnState turnState = humanModelAvailable ? TurnState::ChoosingBoardSize : TurnState::HumanModelMissing;</code></pre>
+<p>
+起動直後に一度だけ<code>humanModelPath</code>の存在を確認し、無ければ
+<code>TurnState::HumanModelMissing</code>から開始する。この状態では右側縦列のボタンを
+「終了」のみにし(<code>盤の大きさ/対局モードの選択ボタンを一切出さない</code>)、HUDに
+配置場所を案内するメッセージを表示する。以前あった<code>ComputeMaxVisitsForRating</code>・
+<code>kAiStrengthScalingMinRating</code>/<code>MaxRating</code>等のフォールバック専用コードは
+到達不能になったため削除した。
+</p>
+<div class="note">
+<p>
+<strong>実機検証</strong>: Human SLモデル未配置の状態(開発機の既定状態)でアプリを起動し、
+盤面上に「Human SLモデル(b18c384nbt-humanv0.bin.gz)が見つからないため対局できません。
+KataGoフォルダに配置してからアプリを起動し直してください(README参照)」というHUDメッセージが
+表示され、右側のボタン列に「終了」以外のボタンが一切表示されないことを確認した。さらに盤面上の
+交点をクリックしても石が置かれず、状態が変化しないこと(<code>katago.exe</code>プロセスも
+起動されないこと)も確認した。
+</p>
+</div>
 <div class="note">
 <p>
 <strong>実機検証</strong>: Human SLモデル本体(<code>b18c384nbt-humanv0.bin.gz</code>、約90MB超)は
@@ -970,8 +1027,9 @@ KataGoの<code>humanSLProfile</code>が実際にサポートするのは20級〜
 </div>
 <div class="note">
 <p>
-<strong>実機検証</strong>: Human SLモデル未配置時のフォールバック経路(19路・カジュアル・
-「1〜9段」タブの「1段」ボタン)で対局を開始し、KataGoが通常モデル(<code>model.bin.gz</code>)
+<strong>実機検証(当時のフォールバック経路。11.6.4節の変更により現在は到達不能)</strong>:
+Human SLモデル未配置時のフォールバック経路(19路・カジュアル・「1〜9段」タブの「1段」ボタン)で
+対局を開始し、KataGoが通常モデル(<code>model.bin.gz</code>)
 のみで正常に起動し、HUDに「AI強さ(目安):1000 [1段相当]」と表示されること、黒番(人間)の
 手番・<code>kata-analyze</code>による勝率バー表示が従来どおり機能することを確認した。
 また、この過程で当初の実装に2件の不具合を発見し修正した: (1) <code>RatingData::Rating</code>の

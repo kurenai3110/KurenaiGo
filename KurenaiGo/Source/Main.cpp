@@ -609,6 +609,7 @@ namespace
     // 対局の進行状態
     enum class TurnState
     {
+        HumanModelMissing, // Human SLモデル(b18c384nbt-humanv0.bin.gz)が未配置のため対局不可。起動時のみ判定する
         ChoosingBoardSize,      // 盤の大きさ(9路/13路/19路)のボタン選択待ち(対局開始前、最初の選択)
         ChoosingGameMode,       // レート戦/カジュアルのボタン選択待ち(対局開始前)
         ChoosingCasualStrength, // (カジュアル選択時のみ)AIの強さの段階選択待ち
@@ -628,31 +629,6 @@ namespace
         Casual, // カジュアル。SGF保存は行うがレーティングには影響しない
     };
 
-    // レーティング(目安)→AIの強さ(maxVisits、10章参照)の写像。visits数と実際の対局相手としての
-    // 強さの対応関係はハードウェア・局面・ネットワークに依存し普遍的な換算式は存在しないため、
-    // これは調整可能な単純な目安であり科学的に較正された対応表ではない。
-    // 現在はHuman SLモデル(11.6節、下記RankIndexForRating等)が使えない場合の
-    // フォールバック専用として残している
-    constexpr int kMinAiVisits = 20;    // 弱め(浅い探索)
-    constexpr int kMaxAiVisits = 500;   // gtp.cfgの元の既定値をそのまま上限に使う
-    constexpr double kAiStrengthScalingMinRating = 1000.0; // これ以下はkMinAiVisits
-    constexpr double kAiStrengthScalingMaxRating = 2000.0; // これ以上はkMaxAiVisits
-
-    int ComputeMaxVisitsForRating(double targetRating)
-    {
-        if (targetRating <= kAiStrengthScalingMinRating)
-        {
-            return kMinAiVisits;
-        }
-        if (targetRating >= kAiStrengthScalingMaxRating)
-        {
-            return kMaxAiVisits;
-        }
-        const double t = (targetRating - kAiStrengthScalingMinRating) /
-            (kAiStrengthScalingMaxRating - kAiStrengthScalingMinRating);
-        return static_cast<int>(std::lround(kMinAiVisits + t * (kMaxAiVisits - kMinAiVisits)));
-    }
-
     // レーティング(0〜上限なし)↔段級位インデックスの変換(11.6節参照)。
     // 段級位インデックスは30級=0、1級=29、1段=30、9段=38、以降10段・11段…も上限なく続く
     // 整数の目安。1段のレーティングがちょうど1000になるよう、レーティングを
@@ -668,7 +644,7 @@ namespace
         return kRankIndexForOneDan * std::cbrt(clamped / kRatingForOneDan);
     }
 
-    double RatingForRankIndex(double rankIndex)
+    constexpr double RatingForRankIndex(double rankIndex)
     {
         return (rankIndex * rankIndex * rankIndex) / 27.0;
     }
@@ -860,6 +836,11 @@ namespace
         bool isPlacementActive, double placementEstimate, double placementConvergenceRate,
         bool postGameAnalysisActive, int postGameAnalysisIndex, int postGameAnalysisTotalMoves)
     {
+        if (turnState == TurnState::HumanModelMissing)
+        {
+            return L"Human SLモデル(b18c384nbt-humanv0.bin.gz)が見つからないため対局できません。"
+                L"KataGoフォルダに配置してからアプリを起動し直してください(README参照)";
+        }
         if (turnState == TurnState::ChoosingBoardSize)
         {
             return L"盤の大きさを選んでください(9路/13路/19路。レーティングは大きさごとに別々に記録されます)";
@@ -1529,8 +1510,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     try
     {
         const std::filesystem::path kataGoDir = ResolveAppDataPath(L"KataGo");
-        // Human SLモデル(11.6節)。任意配置のため、実際に使うかはstd::filesystem::existsで
-        // そのつど確認する(未配置ならComputeMaxVisitsForRatingによる従来方式にフォールバックする)
+        // Human SLモデル(11.6節)。未配置の場合は意図した強さのアマチュア向け対局にならないため、
+        // 起動直後にstd::filesystem::existsで確認し、無ければ対局自体を許可しない
+        // (TurnState::HumanModelMissing、下記turnStateの初期化を参照)
         const std::filesystem::path humanModelPath = kataGoDir / L"b18c384nbt-humanv0.bin.gz";
         const std::filesystem::path soundsDir = ResolveAppDataPath(L"Assets/Sounds");
         const std::filesystem::path gamesDir = ResolveAppDataPath(L"Games");
@@ -1553,7 +1535,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         int currentBoardSize = kDefaultBoardSize;
         GoBoard board(currentBoardSize);
         KataGoClient kataGo;
-        TurnState turnState = TurnState::ChoosingBoardSize;
+        // Human SLモデル(11.6節)が未配置の場合、maxVisitsのみのフォールバックでは
+        // 意図した強さのアマチュア向け対局にならないため、対局自体を許可しない
+        const bool humanModelAvailable = std::filesystem::exists(humanModelPath);
+        TurnState turnState = humanModelAvailable ? TurnState::ChoosingBoardSize : TurnState::HumanModelMissing;
 
         // 対局中の着手・パスの記録。対局終了時にSGFへ保存する
         std::vector<SgfMove> moveHistory;
@@ -1744,10 +1729,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         };
 
         // レート戦/カジュアルの強さがすべて決まった後に呼ぶ。目標レーティングからHuman SLの
-        // 段級位プロファイル(またはHuman SLモデル未配置時はmaxVisits)を求め、KataGoを起動する
-        // (対局ごとに強さを変えるため、対局開始のたびにStartAsyncを呼び直す。
-        // KataGoClient::StartAsyncは実行中のプロセスがあれば終了させてから作り直すため、
-        // 同一インスタンスを安全に再利用できる)
+        // 段級位プロファイルを求め、KataGoを起動する(対局ごとに強さを変えるため、対局開始の
+        // たびにStartAsyncを呼び直す。KataGoClient::StartAsyncは実行中のプロセスがあれば
+        // 終了させてから作り直すため、同一インスタンスを安全に再利用できる)。
+        // Human SLモデル未配置時はturnState初期化時点でHumanModelMissingへ止めており
+        // このラムダ自体が呼ばれないため、ここではhumanModelAvailable==true前提で良い
         const auto beginGameWithTargetRating = [&](double targetRating)
         {
             // 上限なしのレーティングをそのまま表示・保存に使う(11.6節。段級位表示・
@@ -1767,19 +1753,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 placementTracker.Reset(isCurrentGamePlacement, currentBoardSize);
             }
 
-            const bool useHumanSL = std::filesystem::exists(humanModelPath);
-            std::string humanSLProfile;
-            int maxVisits;
-            if (useHumanSL)
-            {
-                const int rankIndex = static_cast<int>(std::lround(RankIndexForRating(currentAiTargetRating)));
-                humanSLProfile = "rank_" + HumanSLProfileSuffixForRankIndex(rankIndex);
-                maxVisits = kHumanSLMaxVisits;
-            }
-            else
-            {
-                maxVisits = ComputeMaxVisitsForRating(currentAiTargetRating);
-            }
+            const int rankIndex = static_cast<int>(std::lround(RankIndexForRating(currentAiTargetRating)));
+            const std::string humanSLProfile = "rank_" + HumanSLProfileSuffixForRankIndex(rankIndex);
+            const int maxVisits = kHumanSLMaxVisits;
 
             kataGo.StartAsync(
                 kataGoDir / L"katago.exe",
@@ -1923,7 +1899,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             // 終了・対局モード/強さ選択)を行うボタン行。表示内容は対局の進行状態(turnState)に
             // 応じて変える
             std::vector<ButtonSpec> buttonSpecs;
-            if (turnState == TurnState::ChoosingBoardSize)
+            // Human SLモデル未配置時は対局できないため、「終了」以外のボタンを一切出さない
+            if (turnState == TurnState::HumanModelMissing)
+            {
+            }
+            else if (turnState == TurnState::ChoosingBoardSize)
             {
                 buttonSpecs.push_back({ ButtonId::ChooseBoardSize9, L"9路", true, false });
                 buttonSpecs.push_back({ ButtonId::ChooseBoardSize13, L"13路", true, false });
