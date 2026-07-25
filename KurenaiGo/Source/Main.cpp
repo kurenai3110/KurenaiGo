@@ -65,9 +65,12 @@ namespace
 
     // 盤の下に確保する操作ボタン行の高さ。ComputeBoardLayoutはこの分を除いた領域に盤を配置する
     constexpr float kButtonBarHeight = 64.0f;
+    // 盤の上に確保する損失グラフの帯の高さ(棋譜再生中のみ描画する。対局中は空のまま)
+    constexpr float kGraphAreaHeight = 90.0f;
 
     constexpr uint32_t kWindowWidth = 900;
-    constexpr uint32_t kWindowHeight = 900 + static_cast<uint32_t>(kButtonBarHeight);
+    constexpr uint32_t kWindowHeight =
+        900 + static_cast<uint32_t>(kButtonBarHeight) + static_cast<uint32_t>(kGraphAreaHeight);
 
     // 盤(木目)が画面短辺に対して占める割合。残りは外周の余白
     constexpr float kBoardExtentRatio = 0.88f;
@@ -96,6 +99,22 @@ namespace
     // 勝率バー(黒番から見た勝率で2色に分割する横棒)の見た目
     constexpr float kWinrateBarHeight = 18.0f;
     constexpr float kWinrateBarMargin = 6.0f; // 盤の上端からバーまでの隙間
+
+    // 勝率バーの下に表示する数値テキスト(勝率%・目差)の見た目
+    constexpr float kWinrateTextFontSize = 15.0f;
+    constexpr float kWinrateTextMargin = 4.0f; // バーからテキストまでの隙間
+    constexpr float kWinrateTextColorR = 0.90f, kWinrateTextColorG = 0.90f, kWinrateTextColorB = 0.88f;
+
+    // 損失グラフ(棋譜再生中のみ、盤上のkGraphAreaHeight帯に描画)の見た目
+    constexpr float kGraphMarginX = 24.0f; // 帯の左右の余白
+    constexpr float kGraphMarginTop = 12.0f;
+    constexpr float kGraphMarginBottom = 8.0f;
+    constexpr float kGraphLineThickness = 2.5f;
+    constexpr float kGraphLineColorR = 0.95f, kGraphLineColorG = 0.75f, kGraphLineColorB = 0.25f;
+    constexpr float kGraphReferenceLineThickness = 1.0f;
+    constexpr float kGraphReferenceColorR = 0.45f, kGraphReferenceColorG = 0.45f, kGraphReferenceColorB = 0.48f;
+    constexpr float kGraphMarkerRadius = 4.5f;
+    constexpr float kGraphMarkerColorR = 1.0f, kGraphMarkerColorG = 1.0f, kGraphMarkerColorB = 1.0f;
 
     // 地合い可視化(Tキーでトグル)の見た目。黒地=青系、白地=赤系のオーバーレイ
     constexpr float kTerritoryBlackR = 0.25f, kTerritoryBlackG = 0.45f, kTerritoryBlackB = 0.95f;
@@ -146,8 +165,10 @@ namespace
 
     BoardLayout ComputeBoardLayout(uint32_t windowWidth, uint32_t windowHeight)
     {
-        // 盤の描画領域はウィンドウ下端の操作ボタン行(kButtonBarHeight)を除いた範囲とする
-        const float boardAreaHeight = (std::max)(1.0f, static_cast<float>(windowHeight) - kButtonBarHeight);
+        // 盤の描画領域はウィンドウ下端の操作ボタン行(kButtonBarHeight)と上端の損失グラフの帯
+        // (kGraphAreaHeight)を除いた範囲とする
+        const float boardAreaHeight =
+            (std::max)(1.0f, static_cast<float>(windowHeight) - kButtonBarHeight - kGraphAreaHeight);
         const float minDimension = (std::min)(static_cast<float>(windowWidth), boardAreaHeight);
 
         BoardLayout layout;
@@ -287,6 +308,11 @@ namespace
         return analysis.ColorToMove == Stone::Black ? value : -value;
     }
 
+    float ToBlackScoreLead(const KataGoAnalysisResult& analysis)
+    {
+        return analysis.ColorToMove == Stone::Black ? analysis.ScoreLeadForColorToMove : -analysis.ScoreLeadForColorToMove;
+    }
+
     // 盤の上マージンに、黒番から見た勝率で2分割した横棒を描く
     void DrawWinrateBar(KurenaiEngine2D& renderer, TextureHandle whiteTexture, const BoardLayout& layout, float blackWinrate)
     {
@@ -310,6 +336,31 @@ namespace
                 barLeft + blackWidth + whiteWidth * 0.5f, barY, whiteWidth, kWinrateBarHeight, 0.0f,
                 whiteTexture, kWhiteStoneR, kWhiteStoneG, kWhiteStoneB, 1.0f);
         }
+    }
+
+    // 勝率バーのすぐ下に、黒視点の勝率(%)と目差を数値で表示する
+    void DrawWinrateText(KurenaiEngine2D& renderer, const BoardLayout& layout, float blackWinrate, float blackScoreLead)
+    {
+        const float textX = layout.CenterX - layout.GridExtent * 0.5f;
+        const float textY = layout.CenterY + layout.BoardExtent * 0.5f + kWinrateBarMargin + kWinrateBarHeight +
+            kWinrateTextMargin;
+
+        std::wostringstream text;
+        text << L"黒 " << std::fixed << std::setprecision(1) << (blackWinrate * 100.0f) << L"%"
+             << L"   目差 " << (blackScoreLead >= 0.0f ? L"+" : L"") << std::setprecision(1) << blackScoreLead;
+
+        renderer.DrawText(textX, textY, text.str(), kWinrateTextFontSize,
+            kWinrateTextColorR, kWinrateTextColorG, kWinrateTextColorB, 1.0f);
+    }
+
+    // 棋譜再生中、その局面の解析がまだキャッシュされていない間に表示する代わりの文言
+    void DrawWinratePending(KurenaiEngine2D& renderer, const BoardLayout& layout)
+    {
+        const float textX = layout.CenterX - layout.GridExtent * 0.5f;
+        const float textY = layout.CenterY + layout.BoardExtent * 0.5f + kWinrateBarMargin + kWinrateBarHeight +
+            kWinrateTextMargin;
+        renderer.DrawText(textX, textY, L"解析中...", kWinrateTextFontSize,
+            kWinrateTextColorR, kWinrateTextColorG, kWinrateTextColorB, 1.0f);
     }
 
     // 石のない交点に、地の所有率(黒視点)に応じた色つきオーバーレイを描く(Tキーでトグル)
@@ -607,6 +658,61 @@ namespace
         }
         return replayBoard;
     }
+
+    // 損失グラフ(棋譜再生中のみ、盤上部のkGraphAreaHeight帯に黒視点勝率の推移を描く)。
+    // hasCached[i]がtrueの手数のみ値が有効(未解析の区間は線が途切れる)。
+    // winrateCache/hasCachedのサイズは総手数+1(0手目〜総手数)
+    void DrawLossGraph(KurenaiEngine2D& renderer, uint32_t windowWidth, uint32_t windowHeight,
+        const std::vector<float>& winrateCache, const std::vector<bool>& hasCached, int currentIndex)
+    {
+        const int totalMoves = static_cast<int>(hasCached.size()) - 1;
+        if (totalMoves <= 0)
+        {
+            return;
+        }
+
+        const float graphLeft = kGraphMarginX;
+        const float graphRight = static_cast<float>(windowWidth) - kGraphMarginX;
+        const float graphBottom = static_cast<float>(windowHeight) - kGraphAreaHeight + kGraphMarginBottom;
+        const float graphTop = static_cast<float>(windowHeight) - kGraphMarginTop;
+        const float graphWidth = (std::max)(1.0f, graphRight - graphLeft);
+        const float graphHeight = (std::max)(1.0f, graphTop - graphBottom);
+
+        const auto xForIndex = [&](int index) -> float
+        {
+            return graphLeft + graphWidth * (static_cast<float>(index) / static_cast<float>(totalMoves));
+        };
+        const auto yForWinrate = [&](float winrate) -> float
+        {
+            return graphBottom + graphHeight * (std::max)(0.0f, (std::min)(1.0f, winrate));
+        };
+
+        // 50%の目安線
+        const float midY = yForWinrate(0.5f);
+        renderer.DrawLine(graphLeft, midY, graphRight, midY, kGraphReferenceLineThickness,
+            kGraphReferenceColorR, kGraphReferenceColorG, kGraphReferenceColorB, 1.0f);
+
+        // キャッシュ済みの区間のみ線分で結ぶ
+        for (int i = 0; i < totalMoves; ++i)
+        {
+            if (!hasCached[i] || !hasCached[i + 1])
+            {
+                continue;
+            }
+            renderer.DrawLine(
+                xForIndex(i), yForWinrate(winrateCache[i]),
+                xForIndex(i + 1), yForWinrate(winrateCache[i + 1]),
+                kGraphLineThickness, kGraphLineColorR, kGraphLineColorG, kGraphLineColorB, 1.0f);
+        }
+
+        // 現在の手数の位置にマーカーを描く
+        if (currentIndex >= 0 && currentIndex <= totalMoves && hasCached[static_cast<size_t>(currentIndex)])
+        {
+            renderer.DrawCircle(
+                xForIndex(currentIndex), yForWinrate(winrateCache[static_cast<size_t>(currentIndex)]),
+                kGraphMarkerRadius, kGraphMarkerColorR, kGraphMarkerColorG, kGraphMarkerColorB, 1.0f);
+        }
+    }
 }
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
@@ -641,7 +747,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         int reviewMoveIndex = 0;
         GoBoard reviewBoard(kBoardLines);
 
-        // 解析(kata-analyze)の最新結果。勝率表示・地合い可視化・着手ヒントが共通で使う
+        // 棋譜再生中の局面ごとの解析結果キャッシュ(黒視点に変換済み)。要素数は総手数+1
+        // (0手目〜総手数)。reviewHasCached[i]がtrueの手数のみ有効な値を持つ
+        std::vector<float> reviewWinrateCache;
+        std::vector<float> reviewScoreLeadCache;
+        std::vector<bool> reviewHasCached;
+        // 解析要求中のreviewMoveIndex(-1なら要求なし)。KataGoClientは1件ずつしか処理しない
+        // 設計のため、前の解析が終わるまで次のreset/replayは送らない(描画ループを止めないため)
+        int reviewAnalysisPendingIndex = -1;
+
+        // 解析(kata-analyze)の最新結果。対局中の勝率表示・地合い可視化・着手ヒントが共通で使う
         KataGoAnalysisResult latestAnalysis;
         bool hasAnalysis = false;
 
@@ -651,6 +766,41 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             turnState = TurnState::HumanToMove;
             hasAnalysis = false;
             kataGo.RequestAnalysis(Stone::Black);
+        };
+
+        // reviewMoveIndex手目の局面をKataGoに解析させる(未キャッシュかつ現在解析要求中でない場合のみ)。
+        // KataGoの盤面をclear_boardしてから0手目〜reviewMoveIndex手目の直前まで再生し直し、
+        // その局面の解析を要求する
+        const auto triggerReviewAnalysisIfNeeded = [&]()
+        {
+            if (reviewAnalysisPendingIndex != -1)
+            {
+                return;
+            }
+            if (reviewMoveIndex < static_cast<int>(reviewHasCached.size()) && reviewHasCached[static_cast<size_t>(reviewMoveIndex)])
+            {
+                return;
+            }
+
+            kataGo.ResetBoard();
+            for (int i = 0; i < reviewMoveIndex; ++i)
+            {
+                const SgfMove& move = reviewRecord.Moves[static_cast<size_t>(i)];
+                if (move.IsPass)
+                {
+                    kataGo.PlayPass(move.Color);
+                }
+                else
+                {
+                    kataGo.PlayMove(move.Color, move.Row, move.Col);
+                }
+            }
+
+            const Stone colorToMove = (reviewMoveIndex == 0)
+                ? Stone::Black
+                : Opponent(reviewRecord.Moves[static_cast<size_t>(reviewMoveIndex - 1)].Color);
+            kataGo.RequestAnalysis(colorToMove);
+            reviewAnalysisPendingIndex = reviewMoveIndex;
         };
 
         kataGo.StartAsync(
@@ -765,12 +915,27 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 }
             }
 
-            // 解析結果のポーリング(HumanToMove遷移時にenterHumanToMove()から要求している)
+            // 解析結果のポーリング。要求元(通常の対局中/棋譜再生中)に応じて振り分ける
             KataGoAnalysisResult polledAnalysis;
             if (kataGo.TryGetAnalysisResult(polledAnalysis))
             {
-                latestAnalysis = polledAnalysis;
-                hasAnalysis = !latestAnalysis.Failed;
+                if (reviewAnalysisPendingIndex != -1)
+                {
+                    if (!polledAnalysis.Failed &&
+                        reviewAnalysisPendingIndex < static_cast<int>(reviewHasCached.size()))
+                    {
+                        const size_t index = static_cast<size_t>(reviewAnalysisPendingIndex);
+                        reviewWinrateCache[index] = ToBlackWinrate(polledAnalysis);
+                        reviewScoreLeadCache[index] = ToBlackScoreLead(polledAnalysis);
+                        reviewHasCached[index] = true;
+                    }
+                    reviewAnalysisPendingIndex = -1;
+                }
+                else
+                {
+                    latestAnalysis = polledAnalysis;
+                    hasAnalysis = !latestAnalysis.Failed;
+                }
             }
 
             switch (turnState)
@@ -896,7 +1061,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         reviewMoveIndex = 0;
                         reviewBoard = GoBoard(kBoardLines);
                         hasAnalysis = false; // 直前の対局の解析結果を棋譜再生画面に持ち越さない
+                        reviewWinrateCache.assign(reviewRecord.Moves.size() + 1, 0.5f);
+                        reviewScoreLeadCache.assign(reviewRecord.Moves.size() + 1, 0.0f);
+                        reviewHasCached.assign(reviewRecord.Moves.size() + 1, false);
+                        reviewAnalysisPendingIndex = -1;
                         turnState = TurnState::Reviewing;
+                        triggerReviewAnalysisIfNeeded(); // 0手目の解析をすぐに開始する
                     }
                     catch (const std::exception& e)
                     {
@@ -924,11 +1094,33 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 {
                     reviewBoard = ReplayMoves(reviewRecord.Moves, reviewMoveIndex, kBoardLines);
                 }
+                triggerReviewAnalysisIfNeeded();
                 break;
             }
             }
 
             const GoBoard& displayBoard = (turnState == TurnState::Reviewing) ? reviewBoard : board;
+
+            // 表示する勝率・目差の決定(通常の対局中は最新解析、棋譜再生中はその手数のキャッシュ)
+            bool haveWinrateToShow = false;
+            float displayBlackWinrate = 0.5f;
+            float displayBlackScoreLead = 0.0f;
+            if (turnState == TurnState::Reviewing)
+            {
+                if (reviewMoveIndex < static_cast<int>(reviewHasCached.size()) &&
+                    reviewHasCached[static_cast<size_t>(reviewMoveIndex)])
+                {
+                    haveWinrateToShow = true;
+                    displayBlackWinrate = reviewWinrateCache[static_cast<size_t>(reviewMoveIndex)];
+                    displayBlackScoreLead = reviewScoreLeadCache[static_cast<size_t>(reviewMoveIndex)];
+                }
+            }
+            else if (hasAnalysis)
+            {
+                haveWinrateToShow = true;
+                displayBlackWinrate = ToBlackWinrate(latestAnalysis);
+                displayBlackScoreLead = ToBlackScoreLead(latestAnalysis);
+            }
 
             renderer.BeginFrame(kClearColorR, kClearColorG, kClearColorB);
             DrawBoard(renderer, whiteTexture, layout);
@@ -941,9 +1133,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             {
                 DrawMoveHints(renderer, layout, whiteTexture, latestAnalysis);
             }
-            if (hasAnalysis)
+            if (haveWinrateToShow)
             {
-                DrawWinrateBar(renderer, whiteTexture, layout, ToBlackWinrate(latestAnalysis));
+                DrawWinrateBar(renderer, whiteTexture, layout, displayBlackWinrate);
+                DrawWinrateText(renderer, layout, displayBlackWinrate, displayBlackScoreLead);
+            }
+            else if (turnState == TurnState::Reviewing)
+            {
+                DrawWinratePending(renderer, layout);
+            }
+            if (turnState == TurnState::Reviewing)
+            {
+                DrawLossGraph(renderer, width, height, reviewWinrateCache, reviewHasCached, reviewMoveIndex);
             }
             DrawHud(renderer, layout, turnState, displayBoard,
                 reviewMoveIndex, static_cast<int>(reviewRecord.Moves.size()), reviewRecord.Result);

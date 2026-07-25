@@ -76,6 +76,10 @@ namespace KurenaiGo
         void PlayMove(Stone color, int row, int col);
         void PlayPass(Stone color);
 
+        // KataGo側の盤面を空盤面へ戻す(同期呼び出し。clear_board応答は一瞬で返るため)。
+        // 棋譜再生で任意の手数の局面を解析させる前に、0手目から再生し直すために使う
+        void ResetBoard();
+
         // genmoveを別スレッドで要求する。結果はTryGetGenMoveResultでポーリングする
         void RequestGenMove(Stone color);
         bool TryGetGenMoveResult(KataGoMoveResult& outResult);

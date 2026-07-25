@@ -286,6 +286,11 @@ namespace KurenaiGo
         Exchange(std::string("play ") + ToGtpColorChar(color) + " pass");
     }
 
+    void KataGoClient::ResetBoard()
+    {
+        Exchange("clear_board");
+    }
+
     void KataGoClient::RequestGenMove(Stone color)
     {
         if (m_WorkerThread.joinable())
