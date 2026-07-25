@@ -4,9 +4,10 @@
 // 座標系はワールド=ピクセル座標(原点は画面左下、Y-up)。
 //
 // 操作: 交点クリックで着手。着手以外の操作(パス・投了・地合い表示切替・着手ヒント表示切替・
-//       棋譜再生・終了)は盤下のボタン行から行う。キーボードでも同じ操作が可能:
+//       棋譜再生・新規対局・終了)は盤下のボタン行から行う。キーボードでも同じ操作が可能:
 //       Pキーでパス / Rキーで投了 / Tキーで地合い表示切替 / Hキーで着手ヒント表示切替 /
-//       対局終了後Vキーで棋譜再生 / 再生中は←→キーで手を戻す・進める / Escで終了
+//       対局終了後Vキーで棋譜再生 / 再生中は←→キーで手を戻す・進める /
+//       対局終了後・棋譜再生中はNキーで新規対局(何度でも打ち直せる) / Escで終了
 
 #include <Windows.h>
 
@@ -583,7 +584,7 @@ namespace
     }
 
     // ボタン1個の識別子。着手以外の操作(パス・投了・地合い表示切替・着手ヒント表示切替・
-    // 棋譜再生・終了)にそれぞれ対応する
+    // 棋譜再生・新規対局・終了)にそれぞれ対応する
     enum class ButtonId
     {
         ToggleTerritory,
@@ -593,6 +594,7 @@ namespace
         StartReview,
         ReviewPrev,
         ReviewNext,
+        NewGame,
         Quit,
     };
 
@@ -988,6 +990,29 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             }
         };
 
+        // レート戦/カジュアルの確認ダイアログを表示し、選択されたモードを返す。KataGo起動直後の
+        // 初回確認と、新規対局開始時(startNewGame)の両方で使う
+        const auto askGameMode = [&]() -> GameMode
+        {
+            return (ShowMessageBoxUtf8(renderer.GetWindowHandle(),
+                "レート戦として対局しますか?(いいえ=カジュアル)\n"
+                "レート戦のみ、対局結果がレーティングに反映されます。",
+                "KurenaiGo", MB_YESNO | MB_ICONQUESTION) == IDYES)
+                ? GameMode::Ranked : GameMode::Casual;
+        };
+
+        // 対局終了後(GameOver)または棋譜再生中(Reviewing)から「新規対局」を選んだ時に呼ぶ。
+        // レート戦/カジュアルを再確認したうえで、盤面・着手履歴・KataGo側の盤面をすべて空の
+        // 状態に戻し、黒番(人間)の手番から対局を再開する(何度でも打ち直せるようにする)
+        const auto startNewGame = [&]()
+        {
+            currentGameMode = askGameMode();
+            board = GoBoard(kBoardLines);
+            moveHistory.clear();
+            kataGo.ResetBoard();
+            enterHumanToMove();
+        };
+
         kataGo.StartAsync(
             kataGoDir / L"katago.exe",
             kataGoDir / L"model.bin.gz",
@@ -997,11 +1022,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 
         // StartAsyncは非同期(専用ワーカースレッドでOpenCL初回チューニング等を行う)ため、
         // ここでモード確認のモーダルを出してもKataGoの起動完了を待たせることにはならない
-        currentGameMode = (ShowMessageBoxUtf8(renderer.GetWindowHandle(),
-            "レート戦として対局しますか?(いいえ=カジュアル)\n"
-            "レート戦のみ、対局結果がレーティングに反映されます。",
-            "KurenaiGo", MB_YESNO | MB_ICONQUESTION) == IDYES)
-            ? GameMode::Ranked : GameMode::Casual;
+        currentGameMode = askGameMode();
 
         bool territoryOverlayEnabled = false;
         bool hintOverlayEnabled = false;
@@ -1049,6 +1070,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             bool reviewStartPressed = renderer.WasKeyPressed('V');
             bool reviewPrevPressed = renderer.WasKeyPressed(VK_LEFT);
             bool reviewNextPressed = renderer.WasKeyPressed(VK_RIGHT);
+            bool newGamePressed = renderer.WasKeyPressed('N');
 
             if (renderer.WasKeyPressed('T'))
             {
@@ -1081,6 +1103,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 buttonSpecs.push_back({ ButtonId::ReviewPrev, L"前の手", canGoPrev, false });
                 buttonSpecs.push_back({ ButtonId::ReviewNext, L"次の手", canGoNext, false });
             }
+            if (turnState == TurnState::GameOver || turnState == TurnState::Reviewing)
+            {
+                // 対局終了後・棋譜再生中はいつでも新規対局を開始できる(何度でも打ち直せるようにする)
+                buttonSpecs.push_back({ ButtonId::NewGame, L"新規対局", true, false });
+            }
             buttonSpecs.push_back({ ButtonId::Quit, L"終了", true, false });
 
             const std::vector<ButtonRect> buttonRects = LayoutButtonRow(buttonSpecs, layout);
@@ -1102,6 +1129,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     case ButtonId::StartReview:     reviewStartPressed = true; break;
                     case ButtonId::ReviewPrev:      reviewPrevPressed = true; break;
                     case ButtonId::ReviewNext:      reviewNextPressed = true; break;
+                    case ButtonId::NewGame:         newGamePressed = true; break;
                     case ButtonId::Quit:            renderer.Close(); break;
                     }
                     break; // ボタンは重ならない配置のため、1個ヒットしたら以降は調べない
@@ -1261,7 +1289,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             }
 
             case TurnState::GameOver:
-                if (reviewStartPressed && !lastSavedGamePath.empty())
+                if (newGamePressed)
+                {
+                    startNewGame();
+                }
+                else if (reviewStartPressed && !lastSavedGamePath.empty())
                 {
                     try
                     {
@@ -1288,6 +1320,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 
             case TurnState::Reviewing:
             {
+                // reviewAnalysisPendingIndex != -1(解析要求中)の間はKataGoClientの
+                // ワーカースレッドがパイプI/Oのmutexを保持し続けるため、ここでResetBoard()を
+                // 呼ぶと解放されるまで描画ループが止まってしまう。requestReviewAnalysisForと
+                // 同じ理由で、解析要求中は新規対局の開始を1フレーム見送る
+                if (newGamePressed && reviewAnalysisPendingIndex == -1)
+                {
+                    startNewGame();
+                    break;
+                }
                 const int totalMoves = static_cast<int>(reviewRecord.Moves.size());
                 bool indexChanged = false;
                 if (reviewNextPressed && reviewMoveIndex < totalMoves)

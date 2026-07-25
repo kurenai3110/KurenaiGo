@@ -299,8 +299,8 @@ falseに戻ってしまう(ホバー判定だけが効かなくなる)ことを�
 <tr><td><code>HumanToMove</code></td><td>黒(人間)の手番。クリック/<code>P</code>/<code>R</code>を受け付ける</td></tr>
 <tr><td><code>AIThinking</code></td><td>白(KataGo)の<code>genmove</code>応答待ち。<code>TryGetGenMoveResult</code>をポーリング</td></tr>
 <tr><td><code>WaitingForScore</code></td><td>両者パス後、<code>final_score</code>応答待ち</td></tr>
-<tr><td><code>GameOver</code></td><td>対局終了。<code>V</code>キーで棋譜再生(<code>Reviewing</code>)へ移れる(9.3節参照)</td></tr>
-<tr><td><code>Reviewing</code></td><td>棋譜再生中。<code>→</code>/<code>←</code>キーで手を進め戻しする</td></tr>
+<tr><td><code>GameOver</code></td><td>対局終了。<code>V</code>キーで棋譜再生(<code>Reviewing</code>)へ移れる(9.3節参照)。<code>N</code>キーで新規対局(<code>HumanToMove</code>)へ戻れる(9.6節参照)</td></tr>
+<tr><td><code>Reviewing</code></td><td>棋譜再生中。<code>→</code>/<code>←</code>キーで手を進め戻しする。<code>N</code>キーで新規対局(<code>HumanToMove</code>)へ戻れる(9.6節参照)</td></tr>
 </tbody>
 </table>
 <p>
@@ -537,6 +537,37 @@ KataGoは1件ずつしかリクエストを処理できない設計のため、�
 このコメント表示の分だけ、盤上部の帯の高さ(<code>kGraphAreaHeight</code>)を90pxから130pxへ
 拡張し、損失グラフ(9.4節)はその下に詰めて描画するようレイアウトを調整しました。
 </p>
+<h3>9.6 新規対局(何度でも打ち直せる)</h3>
+<p>
+<code>GameOver</code>・<code>Reviewing</code>のどちらの状態からでも、<code>新規対局</code>
+ボタン(<code>N</code>キー)で<code>Main.cpp</code>の<code>startNewGame</code>を呼び、
+アプリを再起動せずに何度でも対局をやり直せます。<code>startNewGame</code>は10.1節の対局モード
+確認ダイアログ(<code>askGameMode</code>として関数化)を再表示したうえで、<code>board</code>
+(<code>GoBoard</code>)を空盤面へ作り直し、<code>moveHistory</code>をクリアし、
+<code>KataGoClient::ResetBoard()</code>でKataGo側の盤面も<code>clear_board</code>し、
+<code>enterHumanToMove</code>で黒番(人間)の手番から再開します。
+</p>
+<p>
+<code>lastSavedGamePath</code>・直前の<code>reviewRecord</code>はあえてクリアしません。次の対局が
+終われば<code>FinalizeGameResult</code>が<code>lastSavedGamePath</code>を新しい保存先で上書きし、
+<code>棋譜再生</code>ボタンから改めて読み直す(9.3節)ため、古い値を保持しておいても実害が
+ないためです。
+</p>
+<div class="note">
+<p>
+<strong><code>Reviewing</code>中は解析要求中(9.4節)を避けてから<code>ResetBoard()</code>を
+呼ぶ</strong>: 9.4節の通り<code>KataGoClient::ExchangeAnalyze</code>は解析中ずっと
+<code>m_IoMutex</code>を保持し続ける設計のため、解析要求中(<code>reviewAnalysisPendingIndex
+!= -1</code>)に<code>ResetBoard()</code>(内部で同期的に<code>Exchange("clear_board")</code>を
+呼ぶ)を呼ぶと、解析が終わるまで描画ループがブロックされてしまいます。これは
+<code>requestReviewAnalysisFor</code>が解析要求中の再要求を避けているのと同じ理由のため、
+<code>Reviewing</code>状態での<code>N</code>キー/ボタンは<code>reviewAnalysisPendingIndex ==
+-1</code>の間だけ<code>startNewGame</code>を実行し、解析要求中は1フレーム見送ります(次に押した
+ときには解析が終わっているのが通常のため、実用上は連打すればすぐに反応します)。
+<code>GameOver</code>状態ではその時点で進行中のKataGoリクエストが無いため、この待ち合わせは
+不要です。
+</p>
+</div>
 </section>
 
 <section id="rating">
@@ -566,10 +597,11 @@ newUserRating = userRating + K * (actualScore - expected)</code></pre>
 </div>
 <h3>10.1 対局モード(レート戦/カジュアル)</h3>
 <p>
-起動直後、<code>kataGo.StartAsync(...)</code>呼び出し直後・メインループに入る前の1回だけ
-「レート戦として対局しますか?」を確認する(<code>MB_YESNO</code>の<code>ShowMessageBoxUtf8</code>)。
-<code>StartAsync</code>は専用ワーカースレッドで動く非同期処理のため、この確認はKataGoの
-起動完了(OpenCL初回チューニング等で数十秒かかることがある)を待たせずに表示できる。
+「レート戦として対局しますか?」の確認(<code>MB_YESNO</code>の<code>ShowMessageBoxUtf8</code>)は
+<code>askGameMode</code>という関数に切り出してあり、起動直後(<code>kataGo.StartAsync(...)</code>
+呼び出し直後・メインループに入る前)と、9.6節の<code>startNewGame</code>(新規対局を始めるたび)の
+両方で呼ばれる。<code>StartAsync</code>は専用ワーカースレッドで動く非同期処理のため、起動直後の
+確認はKataGoの起動完了(OpenCL初回チューニング等で数十秒かかることがある)を待たせずに表示できる。
 選択結果は<code>GameMode::Ranked</code>/<code>GameMode::Casual</code>として対局中保持され、
 盤下のHUDに常時表示する。カジュアルを選んだ場合、SGFの保存(9章)は今まで通り行うが、
 レーティングの更新・履歴への追記は一切行わない。
@@ -629,7 +661,6 @@ newUserRating = userRating + K * (actualScore - expected)</code></pre>
 判定(9.5節)に加えて、その手が「地を囲う手」「相手の石を攻める手」等、意図・役割まで
 言語化する。優先度は低い)</li>
 <li>色の選択(現在は人間=黒固定)・ハンディキャップ対局</li>
-<li>対局のリスタート(現在はアプリの再起動が必要)</li>
 <li>過去の複数対局から選んで読み込む機能(現状は直前の対局のみ)</li>
 <li>損失グラフをクリックして該当手数へジャンプする操作(現状は表示のみ)</li>
 </ul>
