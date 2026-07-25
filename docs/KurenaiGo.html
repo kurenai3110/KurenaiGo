@@ -149,14 +149,14 @@
 <section id="status">
 <h2>1. 現在の実装範囲<span class="badge">KataGoとの対局・解析表示が可能</span></h2>
 <p>
-19路盤の表示、マウスでの着手、合法手判定・捕獲・シンプルコウを含むルール、そして
-<a href="https://github.com/lightvector/katago">KataGo</a>をGTP(Go Text Protocol)経由の
-子プロセスとして起動しての対局(人間=黒、KataGo=白)までを実装しています。あわせて、
+盤の大きさの選択(9路/13路/19路、10.5節参照)、マウスでの着手、合法手判定・捕獲・シンプルコウを
+含むルール、そして<a href="https://github.com/lightvector/katago">KataGo</a>をGTP(Go Text
+Protocol)経由の子プロセスとして起動しての対局(人間=黒、KataGo=白)までを実装しています。あわせて、
 <code>kata-analyze</code>による局面解析を使った勝率表示・地合い可視化・着手ヒント(8章)、
 棋譜(SGF)の自動保存・再生・再生中の解析表示と損失グラフ(9章)、レート戦/カジュアルの
-対局モード分けと棋力の数値化(レーティング、10章)、レーティングに応じたAIの強さの自動調整
-(11章)、レート戦終了時の自動解析による苦手分野の解析(局面ごとの悪手率、12章)も
-実装済みです。色の選択・ハンディキャップは未実装です(13章参照)。
+対局モード分けと棋力の数値化(レーティング、盤の大きさごとに別々に記録、10章)、レーティングに
+応じたAIの強さの自動調整(11章)、レート戦終了時の自動解析による苦手分野の解析(局面ごとの
+悪手率、12章)も実装済みです。色の選択・ハンディキャップは未実装です(13章参照)。
 </p>
 </section>
 
@@ -166,7 +166,9 @@
 <code>KurenaiEngine2D</code>のワールド座標はウィンドウのピクセル座標そのもので、原点は画面左下、
 Y-upです(<code>DrawSprite</code>の<code>x, y</code>はスプライト中心)。KurenaiGoではウィンドウの
 リサイズに追従できるよう、毎フレーム <code>renderer.GetWidth()</code>/<code>GetHeight()</code> から
-盤のレイアウトを再計算しています(<code>ComputeBoardLayout</code>)。
+盤のレイアウトを再計算しています(<code>ComputeBoardLayout</code>)。盤の目の数(<code>boardSize</code>、
+9/13/19のいずれか、10.5節参照)も引数として渡し、<code>LineSpacing</code>の分母に使うことで、
+盤の一辺の物理サイズは変えずに目の間隔だけを盤の大きさに応じて変えています。
 </p>
 <pre><code>struct BoardLayout
 {
@@ -174,14 +176,14 @@ Y-upです(<code>DrawSprite</code>の<code>x, y</code>はスプライト中心)�
     float CenterY;
     float BoardExtent;  // 木目の盤面の一辺の長さ
     float GridExtent;   // 格子線が占める範囲の一辺の長さ(盤面より内側)
-    float LineSpacing;  // 目の間隔 = GridExtent / (kBoardLines - 1)
+    float LineSpacing;  // 目の間隔 = GridExtent / (boardSize - 1)
 };</code></pre>
 <ul>
 <li><code>BoardExtent</code>はウィンドウの短辺 × <code>kBoardExtentRatio</code>(0.88)。
 常に正方形になるよう短辺基準で計算する。</li>
 <li><code>GridExtent</code>は<code>BoardExtent</code> × <code>kGridExtentRatio</code>(0.90)。
 盤面の外周に木目の縁が見えるよう、格子線の範囲を一回り小さくしている。</li>
-<li>格子線のインデックス(0〜18)からワールド座標への変換は
+<li>格子線のインデックス(0〜boardSize-1)からワールド座標への変換は
 <code>GridIndexToCoordinate</code>が行う(中心から<code>GridExtent</code>の半分だけ引いた位置を
 起点に、<code>LineSpacing</code>刻みで並べる)。</li>
 </ul>
@@ -200,8 +202,9 @@ PNGを生成していましたが、<code>DrawCircle</code>の追加に伴い削
 <thead><tr><th>要素</th><th>描画方法</th></tr></thead>
 <tbody>
 <tr><td>盤面(木目)</td><td>1x1の白テクスチャを木目色でティントした正方形スプライト1枚</td></tr>
-<tr><td>格子線(縦横19本ずつ、計38本)</td><td><code>DrawLine</code>で格子の端から端まで1本ずつ描画</td></tr>
-<tr><td>星(hoshi、3x3=9箇所)</td><td>格子の交点(0-indexedで3, 9, 15)に<code>DrawCircle</code>で小さな点を描画</td></tr>
+<tr><td>格子線(縦横boardSize本ずつ)</td><td><code>DrawLine</code>で格子の端から端まで1本ずつ描画</td></tr>
+<tr><td>星(hoshi)</td><td>盤の大きさごとの標準的な交点(19路は4隅+辺+天元の9箇所、0-indexedで3,9,15の組み合わせ。
+9路・13路は4隅+天元の5箇所)に<code>DrawCircle</code>で小さな点を描画(<code>HoshiPointsForBoardSize</code>)</td></tr>
 <tr><td>石(黒・白)</td><td><code>GoBoard</code>の石がある交点に<code>DrawCircle</code>で塗り円を描画</td></tr>
 </tbody>
 </table>
@@ -298,14 +301,15 @@ falseに戻ってしまう(ホバー判定だけが効かなくなる)ことを�
 <table>
 <thead><tr><th>状態</th><th>内容</th></tr></thead>
 <tbody>
+<tr><td><code>ChoosingBoardSize</code></td><td>盤の大きさ(9路/13路/19路)のボタン選択待ち。起動直後・新規対局のたびに最初に通る状態(10.5節参照)</td></tr>
 <tr><td><code>ChoosingGameMode</code></td><td>対局モード(レート戦/カジュアル)のボタン選択待ち(10.1節・11.1節参照)</td></tr>
 <tr><td><code>ChoosingCasualStrength</code></td><td>(カジュアル選択時のみ)AIの強さの段階選択待ち(11.1節参照)</td></tr>
 <tr><td><code>EngineStarting</code></td><td>KataGo起動中。<code>KataGoClient::IsStartupComplete()</code>をポーリング</td></tr>
 <tr><td><code>HumanToMove</code></td><td>黒(人間)の手番。クリック/<code>P</code>/<code>R</code>を受け付ける</td></tr>
 <tr><td><code>AIThinking</code></td><td>白(KataGo)の<code>genmove</code>応答待ち。<code>TryGetGenMoveResult</code>をポーリング</td></tr>
 <tr><td><code>WaitingForScore</code></td><td>両者パス後、<code>final_score</code>応答待ち</td></tr>
-<tr><td><code>GameOver</code></td><td>対局終了。<code>V</code>キーで棋譜再生(<code>Reviewing</code>)へ移れる(9.3節参照)。<code>N</code>キーで新規対局(<code>ChoosingGameMode</code>)へ戻れる(9.6節参照)。レート戦終了直後は自動解析(12章)が終わるまで<code>N</code>/<code>V</code>とも無効</td></tr>
-<tr><td><code>Reviewing</code></td><td>棋譜再生中。<code>→</code>/<code>←</code>キーで手を進め戻しする。<code>N</code>キーで新規対局(<code>ChoosingGameMode</code>)へ戻れる(9.6節参照)</td></tr>
+<tr><td><code>GameOver</code></td><td>対局終了。<code>V</code>キーで棋譜再生(<code>Reviewing</code>)へ移れる(9.3節参照)。<code>N</code>キーで新規対局(<code>ChoosingBoardSize</code>)へ戻れる(9.6節参照)。レート戦終了直後は自動解析(12章)が終わるまで<code>N</code>/<code>V</code>とも無効</td></tr>
+<tr><td><code>Reviewing</code></td><td>棋譜再生中。<code>→</code>/<code>←</code>キーで手を進め戻しする。<code>N</code>キーで新規対局(<code>ChoosingBoardSize</code>)へ戻れる(9.6節参照)</td></tr>
 <tr><td><code>ViewingMistakeStats</code></td><td>苦手分野の解析結果を表示中(12.6節参照)。「戻る」ボタンで元の状態(<code>GameOver</code>/<code>Reviewing</code>)に戻る</td></tr>
 </tbody>
 </table>
@@ -563,11 +567,12 @@ KataGoは1件ずつしかリクエストを処理できない設計のため、�
 <p>
 <code>GameOver</code>・<code>Reviewing</code>のどちらの状態からでも、<code>新規対局</code>
 ボタン(<code>N</code>キー)で<code>Main.cpp</code>の<code>startNewGame</code>を呼び、
-アプリを再起動せずに何度でも対局をやり直せます。<code>startNewGame</code>は<code>board</code>
-(<code>GoBoard</code>)を空盤面へ作り直し、<code>moveHistory</code>をクリアしたうえで、
-<code>TurnState::ChoosingGameMode</code>(10.1節の対局モード選択)へ戻します。以降は初回起動時と
-同じ経路(モード選択→(カジュアルのみ)強さ選択→KataGo起動)を通って黒番(人間)の手番から
-再開します(11.1節参照。対局ごとに強さを変えるため、新規対局のたびにKataGoを起動し直す)。
+アプリを再起動せずに何度でも対局をやり直せます。<code>startNewGame</code>は<code>moveHistory</code>を
+クリアしたうえで<code>TurnState::ChoosingBoardSize</code>(10.5節の盤の大きさ選択)へ戻します。
+<code>board</code>(<code>GoBoard</code>)自体は盤の大きさボタン(<code>9路</code>/<code>13路</code>/
+<code>19路</code>)を選んだ時点で新しい大きさの空盤面として作り直されます。以降は初回起動時と
+同じ経路(盤の大きさ選択→モード選択→(カジュアルのみ)強さ選択→KataGo起動)を通って黒番(人間)の
+手番から再開します(11.1節参照。対局ごとに強さを変えるため、新規対局のたびにKataGoを起動し直す)。
 </p>
 <p>
 <code>lastSavedGamePath</code>・直前の<code>reviewRecord</code>はあえてクリアしません。次の対局が
@@ -624,7 +629,8 @@ newUserRating = userRating + K * (actualScore - expected)</code></pre>
 対局モードの選択は、当初<code>MB_YESNO</code>の<code>ShowMessageBoxUtf8</code>によるモーダル
 ダイアログとして実装していたが、11章のカジュアル強さ選択(5段階)を追加するにあたり、
 既存の盤下ボタン行(<code>ButtonSpec</code>/<code>DrawButton</code>)による選択に統一した
-(モーダルダイアログを使い続ける理由が無くなったため。<code>TurnState::ChoosingGameMode</code>で
+(モーダルダイアログを使い続ける理由が無くなったため。<code>TurnState::ChoosingBoardSize</code>
+(10.5節、盤の大きさ選択)の直後の<code>TurnState::ChoosingGameMode</code>で
 「レート戦」/「カジュアル」の2択を、カジュアルを選んだ場合のみ続けて
 <code>TurnState::ChoosingCasualStrength</code>で強さの5段階を選ぶ)。選択結果は
 <code>GameMode::Ranked</code>/<code>GameMode::Casual</code>として対局中保持され、盤下のHUDに
@@ -654,6 +660,38 @@ newUserRating = userRating + K * (actualScore - expected)</code></pre>
 不在・全行パース失敗時は初期値にフォールバックし例外は投げない)。今回のパスでは推移の記録の
 みを行い、グラフ等での可視化(9.4節の損失グラフに相当するもの)は未実装(13章参照)。
 </p>
+<h3>10.5 盤の大きさ(9路/13路/19路)ごとの分離</h3>
+<p>
+<code>TurnState::ChoosingBoardSize</code>を<code>ChoosingGameMode</code>より前に追加し、起動直後・
+新規対局(9.6節)のたびに最初に通る状態にした。盤下ボタン(<code>9路</code>/<code>13路</code>/
+<code>19路</code>)を選ぶと<code>currentBoardSize</code>(<code>Main.cpp</code>)にその値を保持し、
+<code>board</code>(<code>GoBoard</code>)をその大きさで作り直してから<code>ChoosingGameMode</code>
+(10.1節)へ進む。<code>currentBoardSize</code>は<code>ComputeBoardLayout</code>・
+<code>DrawBoard</code>・<code>KataGoClient::StartAsync</code>(GTPの<code>boardsize</code>コマンド)・
+SGF書き出し(<code>SgfGameRecord::BoardSize</code>)など、盤の大きさに依存するすべての箇所に渡す
+(2〜3章参照)。
+</p>
+<p>
+9路・13路・19路は互角になる強さの基準がまったく異なるため、レーティングは<strong>盤の大きさごとに
+完全に独立したファイル</strong>で管理する(<code>rating_history.txt</code>=19路、
+<code>rating_history_13.txt</code>=13路、<code>rating_history_9.txt</code>=9路。いずれも
+<code>ResolveAppDataPath</code>でexeと同じフォルダに解決)。19路は既存ユーザーの
+<code>rating_history.txt</code>をそのまま使い続けるため、ファイル名は変更していない。
+<code>Main.cpp</code>は起動時に3つとも<code>LoadRating</code>で読み込んでおき、
+<code>CurrentUserRating()</code>/<code>CurrentRatingPath()</code>という2つのラムダが
+<code>currentBoardSize</code>に応じて対応する<code>RatingData</code>/パスへの参照を返す
+(10.1〜10.4節・11章のレーティング更新・AIの強さ計算は、すべてこの2つの参照経由で行うよう
+書き換えた)。対局中に盤の大きさが変わることは無い(選び直しは<code>ChoosingBoardSize</code>のみ)
+ため、フレームごとに参照先を解決し直しても矛盾は生じない。
+</p>
+<h3>10.6 盤の星(hoshi)の標準的な配置</h3>
+<p>
+9路・13路は4隅+天元の5箇所(19路のような辺の星は無い)、19路は4隅+辺+天元の9箇所という、
+それぞれの盤の大きさで広く使われる標準的な配置を<code>HoshiPointsForBoardSize</code>
+(<code>Main.cpp</code>)にハードコードしている。19路の9箇所は0-indexedで3・9・15の
+3×3の組み合わせとして機械的に生成できるが、9路・13路は辺の星が無い非対称なパターンのため、
+座標を1つずつ列挙している。
+</p>
 </section>
 
 <section id="strength">
@@ -680,7 +718,9 @@ M5時点では「体感の起動待ち時間を減らす」ため、<code>kataGo
 <code>kataGo.StartAsync(...)</code>を呼んで<code>TurnState::EngineStarting</code>へ遷移する
 (以降は既存の起動待ちポーリングをそのまま使う)。<code>startNewGame</code>(9.6節、新規対局)は
 盤面・着手履歴をリセットして<code>ChoosingGameMode</code>へ戻すだけの処理に簡略化され、
-初回起動時のセットアップと新規対局時のセットアップが同じ経路を通るようになった。
+初回起動時のセットアップと新規対局時のセットアップが同じ経路を通るようになった(その後10.5節で
+<code>ChoosingGameMode</code>の前に<code>ChoosingBoardSize</code>を追加した際も、
+<code>startNewGame</code>の戻り先を<code>ChoosingBoardSize</code>に変えるだけで済んだ)。
 </p>
 <h3>11.2 レーティング→強さ(maxVisits)の写像</h3>
 <pre><code>constexpr int kMinAiVisits = 20;    // 弱め
@@ -690,7 +730,8 @@ constexpr double kAiStrengthScalingMaxRating = 2000.0; // これ以上はkMaxAiV
 <p>
 目標レーティングをこの範囲で線形補間して<code>maxVisits</code>を求める
 (<code>ComputeMaxVisitsForRating</code>、<code>Main.cpp</code>)。レート戦の目標レーティングは
-常に<code>userRating.Rating</code>(自分の現在のレーティングと互角の相手にする設計)、
+常に<code>CurrentUserRating().Rating</code>(現在選択中の盤の大きさでの自分のレーティングと
+互角の相手にする設計、10.5節参照)、
 カジュアルは5段階のボタン(とても弱め/弱め/おすすめ/強め/とても強め、おすすめ以外は
 自分のレーティングから±200/±400したうえで上記範囲にクランプした値)から選ぶ。
 </p>
@@ -705,9 +746,10 @@ constexpr double kAiStrengthScalingMaxRating = 2000.0; // これ以上はkMaxAiV
 </div>
 <h3>11.3 初期レーティング決定(プレースメント)モード</h3>
 <p>
-対局回数0(<code>userRating.GamesPlayed == 0</code>)のままレート戦を始めた場合のみ発動する。
-強さの決め方自体は11.2節と同じ(この時点では<code>userRating.Rating</code>がまだ既定値の1500の
-ため、結果的に1500相当の強さで対局する)。特別なのは、対局<strong>中</strong>にレーティング
+対局回数0(<code>CurrentUserRating().GamesPlayed == 0</code>、盤の大きさごとに別々に判定、
+10.5節参照)のままレート戦を始めた場合のみ発動する。強さの決め方自体は11.2節と同じ(この時点では
+<code>CurrentUserRating().Rating</code>がまだ既定値の1500のため、結果的に1500相当の強さで
+対局する)。特別なのは、対局<strong>中</strong>にレーティング
 推定値を追跡し、収束したら対局の結果を待たずにその時点で確定する点である。
 </p>
 <p>
@@ -722,7 +764,8 @@ double InvertEloForRating(double expectedScore, double opponentRating);</code></
 (EMA、重み0.15)へ取り込み、<code>InvertEloForRating</code>で瞬間推定レーティングを求めて
 直近8件の履歴を保持する。サンプル数が10以上になったら、直近8件の最大-最小が15点未満、
 または総サンプル数が60に達した時点で「収束」とみなし、直近8件の平均値を確定レーティングと
-して<code>rating_history.txt</code>へ結果<code>"PLACEMENT"</code>で追記する
+して現在選択中の盤の大きさに対応する履歴ファイル(<code>CurrentRatingPath()</code>、10.5節)へ
+結果<code>"PLACEMENT"</code>で追記する
 (<code>GamesPlayed</code>が0から1になり、以降は通常のレート戦になる)。収束するまでは
 現在進行中の対局をそのまま続行し、収束後にその対局が終了しても(すでにこのモードとしての
 決着がついているため)通常の終局時Elo更新は行わない(<code>FinalizeGameResult</code>の

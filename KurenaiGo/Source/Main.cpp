@@ -24,6 +24,7 @@
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "GoBoard.h"
@@ -64,11 +65,32 @@ namespace
         return MessageBoxW(owner, Utf8ToWide(utf8Text).c_str(), Utf8ToWide(utf8Caption).c_str(), type);
     }
 
-    // 盤の目の数(19路盤)
-    constexpr int kBoardLines = 19;
+    // 対局開始前(ChoosingBoardSize)の既定の盤の目の数(9路/13路/19路から選び直せる)
+    constexpr int kDefaultBoardSize = 19;
 
-    // 19路盤の星(hoshi)の位置。0-indexed(0〜18)で、標準的な4線交点
-    constexpr std::array<int, 3> kHoshiIndices = { 3, 9, 15 };
+    // 盤の星(hoshi)の座標(0-indexed、row/colとも0〜boardSize-1)。9路・13路は4隅+天元の5点、
+    // 19路は4隅+辺+天元の9点という、それぞれの盤の目の数で広く使われる標準的な配置
+    std::vector<std::pair<int, int>> HoshiPointsForBoardSize(int boardSize)
+    {
+        switch (boardSize)
+        {
+        case 9:  return { { 2, 2 }, { 2, 6 }, { 6, 2 }, { 6, 6 }, { 4, 4 } };
+        case 13: return { { 3, 3 }, { 3, 9 }, { 9, 3 }, { 9, 9 }, { 6, 6 } };
+        default: // 19
+        {
+            constexpr int kLineIndices[3] = { 3, 9, 15 };
+            std::vector<std::pair<int, int>> points;
+            for (int r : kLineIndices)
+            {
+                for (int c : kLineIndices)
+                {
+                    points.push_back({ r, c });
+                }
+            }
+            return points;
+        }
+        }
+    }
 
     // 画面右側に確保する操作ボタン列の幅。ComputeBoardLayoutはこの分を除いた領域(左側)に盤を配置する
     constexpr float kButtonColumnWidth = 220.0f;
@@ -204,7 +226,7 @@ namespace
         float ContentWidth = 0.0f;
     };
 
-    BoardLayout ComputeBoardLayout(uint32_t windowWidth, uint32_t windowHeight)
+    BoardLayout ComputeBoardLayout(uint32_t windowWidth, uint32_t windowHeight, int boardSize)
     {
         // 盤の描画領域は、右端の操作ボタン列(kButtonColumnWidth)を除いた幅・上端の損失グラフの帯
         // (kGraphAreaHeight)を除いた高さの範囲とする(下端はボタン行が無くなったため制約が無い)
@@ -217,12 +239,12 @@ namespace
         layout.CenterY = boardAreaHeight * 0.5f;
         layout.BoardExtent = minDimension * kBoardExtentRatio;
         layout.GridExtent = layout.BoardExtent * kGridExtentRatio;
-        layout.LineSpacing = layout.GridExtent / static_cast<float>(kBoardLines - 1);
+        layout.LineSpacing = layout.GridExtent / static_cast<float>(boardSize - 1);
         layout.ContentWidth = contentWidth;
         return layout;
     }
 
-    // 格子線上のインデックス(0〜kBoardLines-1)からワールド座標へ変換する
+    // 格子線上のインデックス(0〜boardSize-1)からワールド座標へ変換する
     float GridIndexToCoordinate(const BoardLayout& layout, float center, int index)
     {
         const float origin = center - layout.GridExtent * 0.5f;
@@ -231,7 +253,8 @@ namespace
 
     // ワールド座標(worldX, worldY)に最も近い交点を求め、スナップ範囲内であれば
     // outRow/outColに書き込みtrueを返す。盤外・範囲外ならfalse
-    bool TryGetHoveredIntersection(const BoardLayout& layout, float worldX, float worldY, int& outRow, int& outCol)
+    bool TryGetHoveredIntersection(const BoardLayout& layout, float worldX, float worldY, int boardSize,
+        int& outRow, int& outCol)
     {
         const auto nearestIndex = [](const BoardLayout& layoutRef, float center, float coord) -> int
         {
@@ -241,7 +264,7 @@ namespace
 
         const int col = nearestIndex(layout, layout.CenterX, worldX);
         const int row = nearestIndex(layout, layout.CenterY, worldY);
-        if (col < 0 || col >= kBoardLines || row < 0 || row >= kBoardLines)
+        if (col < 0 || col >= boardSize || row < 0 || row >= boardSize)
         {
             return false;
         }
@@ -261,7 +284,7 @@ namespace
         return true;
     }
 
-    void DrawBoard(KurenaiEngine2D& renderer, TextureHandle whiteTexture, const BoardLayout& layout)
+    void DrawBoard(KurenaiEngine2D& renderer, TextureHandle whiteTexture, const BoardLayout& layout, int boardSize)
     {
         // 木目の盤面
         renderer.DrawSprite(
@@ -272,7 +295,7 @@ namespace
         const float halfGrid = layout.GridExtent * 0.5f;
 
         // 横線(各行ごとに1本、盤の幅いっぱいに伸ばす)
-        for (int row = 0; row < kBoardLines; ++row)
+        for (int row = 0; row < boardSize; ++row)
         {
             const float y = GridIndexToCoordinate(layout, layout.CenterY, row);
             renderer.DrawLine(
@@ -281,7 +304,7 @@ namespace
         }
 
         // 縦線(各列ごとに1本、盤の高さいっぱいに伸ばす)
-        for (int col = 0; col < kBoardLines; ++col)
+        for (int col = 0; col < boardSize; ++col)
         {
             const float x = GridIndexToCoordinate(layout, layout.CenterX, col);
             renderer.DrawLine(
@@ -289,25 +312,23 @@ namespace
                 kLineColorR, kLineColorG, kLineColorB, 1.0f);
         }
 
-        // 星(hoshi)。3x3の標準的な交点に小さな点を描く
+        // 星(hoshi)。盤の目の数に応じた標準的な交点に小さな点を描く
         const float hoshiRadius = layout.LineSpacing * 0.11f;
-        for (int hoshiRow : kHoshiIndices)
+        for (const auto& [hoshiRow, hoshiCol] : HoshiPointsForBoardSize(boardSize))
         {
             const float y = GridIndexToCoordinate(layout, layout.CenterY, hoshiRow);
-            for (int hoshiCol : kHoshiIndices)
-            {
-                const float x = GridIndexToCoordinate(layout, layout.CenterX, hoshiCol);
-                renderer.DrawCircle(x, y, hoshiRadius, kLineColorR, kLineColorG, kLineColorB, 1.0f);
-            }
+            const float x = GridIndexToCoordinate(layout, layout.CenterX, hoshiCol);
+            renderer.DrawCircle(x, y, hoshiRadius, kLineColorR, kLineColorG, kLineColorB, 1.0f);
         }
     }
 
     void DrawStones(KurenaiEngine2D& renderer, const GoBoard& board, const BoardLayout& layout)
     {
+        const int boardSize = board.Size();
         const float stoneRadius = layout.LineSpacing * 0.46f;
-        for (int row = 0; row < kBoardLines; ++row)
+        for (int row = 0; row < boardSize; ++row)
         {
-            for (int col = 0; col < kBoardLines; ++col)
+            for (int col = 0; col < boardSize; ++col)
             {
                 const Stone stone = board.At(row, col);
                 if (stone == Stone::Empty)
@@ -493,22 +514,23 @@ namespace
     void DrawTerritoryOverlay(KurenaiEngine2D& renderer, const GoBoard& board, const BoardLayout& layout,
         TextureHandle whiteTexture, const KataGoAnalysisResult& analysis)
     {
-        if (analysis.Ownership.size() != static_cast<size_t>(kBoardLines) * static_cast<size_t>(kBoardLines))
+        const int boardSize = board.Size();
+        if (analysis.Ownership.size() != static_cast<size_t>(boardSize) * static_cast<size_t>(boardSize))
         {
             return;
         }
 
         const float overlaySize = layout.LineSpacing * 0.82f;
-        for (int row = 0; row < kBoardLines; ++row)
+        for (int row = 0; row < boardSize; ++row)
         {
-            for (int col = 0; col < kBoardLines; ++col)
+            for (int col = 0; col < boardSize; ++col)
             {
                 if (board.At(row, col) != Stone::Empty)
                 {
                     continue;
                 }
 
-                const float blackOwnership = ToBlackOwnership(analysis, OwnershipIndex(row, col, kBoardLines));
+                const float blackOwnership = ToBlackOwnership(analysis, OwnershipIndex(row, col, boardSize));
                 const float magnitude = std::fabs(blackOwnership);
                 if (magnitude < kTerritoryMinMagnitude)
                 {
@@ -564,6 +586,7 @@ namespace
     // 対局の進行状態
     enum class TurnState
     {
+        ChoosingBoardSize,      // 盤の大きさ(9路/13路/19路)のボタン選択待ち(対局開始前、最初の選択)
         ChoosingGameMode,       // レート戦/カジュアルのボタン選択待ち(対局開始前)
         ChoosingCasualStrength, // (カジュアル選択時のみ)AIの強さの段階選択待ち
         EngineStarting, // KataGo起動中(強さ確定後に起動するため、対局開始のたびに発生する)
@@ -704,6 +727,10 @@ namespace
         bool isPlacementActive, double placementEstimate,
         bool postGameAnalysisActive, int postGameAnalysisIndex, int postGameAnalysisTotalMoves)
     {
+        if (turnState == TurnState::ChoosingBoardSize)
+        {
+            return L"盤の大きさを選んでください(9路/13路/19路。レーティングは大きさごとに別々に記録されます)";
+        }
         if (turnState == TurnState::ChoosingGameMode)
         {
             return L"対局モードを選んでください(レート戦: 今のレーティングと互角のAIと対局/"
@@ -785,6 +812,9 @@ namespace
         ReviewNext,
         NewGame,
         Quit,
+        ChooseBoardSize9,
+        ChooseBoardSize13,
+        ChooseBoardSize19,
         ChooseRanked,
         ChooseCasual,
         StrengthMuchWeaker,
@@ -989,14 +1019,14 @@ namespace
     // 失敗しても例外は投げずerror.logに記録するのみとする。戻り値は保存先パス
     // (棋譜再生で読み直すために使う)。失敗時は空のパスを返す
     std::filesystem::path SaveGameRecordSafely(const std::filesystem::path& gamesDir,
-        const std::vector<SgfMove>& moves, const std::string& result)
+        const std::vector<SgfMove>& moves, const std::string& result, int boardSize)
     {
         try
         {
             std::filesystem::create_directories(gamesDir);
 
             SgfGameRecord record;
-            record.BoardSize = kBoardLines;
+            record.BoardSize = boardSize;
             record.Komi = kKomi;
             record.Result = result;
             record.Moves = moves;
@@ -1025,9 +1055,9 @@ namespace
     std::filesystem::path FinalizeGameResult(const std::filesystem::path& gamesDir,
         const std::filesystem::path& ratingPath, const std::vector<SgfMove>& moves,
         const std::string& result, GameMode gameMode, double opponentRatingForThisGame,
-        bool isPlacementGame, RatingData& userRating)
+        bool isPlacementGame, RatingData& userRating, int boardSize)
     {
-        const std::filesystem::path savedPath = SaveGameRecordSafely(gamesDir, moves, result);
+        const std::filesystem::path savedPath = SaveGameRecordSafely(gamesDir, moves, result, boardSize);
 
         if (gameMode != GameMode::Ranked || isPlacementGame)
         {
@@ -1237,7 +1267,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         const std::filesystem::path kataGoDir = ResolveAppDataPath(L"KataGo");
         const std::filesystem::path soundsDir = ResolveAppDataPath(L"Assets/Sounds");
         const std::filesystem::path gamesDir = ResolveAppDataPath(L"Games");
-        const std::filesystem::path ratingPath = ResolveAppDataPath(L"rating_history.txt");
+        // レーティングは盤の大きさ(9路/13路/19路)ごとに互いに独立して記録する(強さの基準が
+        // 盤の大きさで全く異なるため)。19路は既存ユーザーのrating_history.txtをそのまま使い続け、
+        // 9路・13路は新規にrating_history_9.txt/rating_history_13.txtへ記録する
+        const std::filesystem::path ratingPath19 = ResolveAppDataPath(L"rating_history.txt");
+        const std::filesystem::path ratingPath13 = ResolveAppDataPath(L"rating_history_13.txt");
+        const std::filesystem::path ratingPath9 = ResolveAppDataPath(L"rating_history_9.txt");
         const std::filesystem::path mistakeStatsPath = ResolveAppDataPath(L"mistake_stats.txt");
 
         KurenaiEngine2D renderer(kWindowTitle, kWindowWidth, kWindowHeight, GraphicsAPI::DX11);
@@ -1246,19 +1281,47 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         const SoundHandle stonePlaceSound = renderer.LoadSound((soundsDir / L"stone_place.wav").wstring());
         const SoundHandle gameEndSound = renderer.LoadSound((soundsDir / L"game_end.wav").wstring());
 
-        GoBoard board(kBoardLines);
+        // 対局開始前(ChoosingBoardSize)に選ぶ盤の大きさ。既定値はkDefaultBoardSize(19路)で、
+        // 選び直すたびにboard/reviewBoardをこの大きさで作り直す
+        int currentBoardSize = kDefaultBoardSize;
+        GoBoard board(currentBoardSize);
         KataGoClient kataGo;
-        TurnState turnState = TurnState::ChoosingGameMode;
+        TurnState turnState = TurnState::ChoosingBoardSize;
 
         // 対局中の着手・パスの記録。対局終了時にSGFへ保存する
         std::vector<SgfMove> moveHistory;
         // 直近の対局終了時にSGFを保存したパス。GameOver中にVキーを押すとこれを読み込んで再生する
         std::filesystem::path lastSavedGamePath;
 
-        // 棋力の数値化(レーティング)。rating_history.txtから現在値を復元する。
+        // 棋力の数値化(レーティング)。盤の大きさごとにrating_history*.txtから現在値を復元する。
         // 対局モード(レート戦/カジュアル)・AIの強さは対局開始前(ChoosingGameMode/
         // ChoosingCasualStrength)にそのつど選ぶ(下記)
-        RatingData userRating = LoadRating(ratingPath);
+        RatingData userRating9 = LoadRating(ratingPath9);
+        RatingData userRating13 = LoadRating(ratingPath13);
+        RatingData userRating19 = LoadRating(ratingPath19);
+
+        // 現在選択中の盤の大きさ(currentBoardSize)に対応するレーティングデータ/履歴ファイルを返す。
+        // 対局中は盤の大きさを変えない(選び直しはChoosingBoardSizeでのみ行う)ため、
+        // 呼び出しのたびに参照先を解決しても矛盾は生じない
+        const auto CurrentUserRating = [&]() -> RatingData&
+        {
+            switch (currentBoardSize)
+            {
+            case 9:  return userRating9;
+            case 13: return userRating13;
+            default: return userRating19;
+            }
+        };
+        const auto CurrentRatingPath = [&]() -> const std::filesystem::path&
+        {
+            switch (currentBoardSize)
+            {
+            case 9:  return ratingPath9;
+            case 13: return ratingPath13;
+            default: return ratingPath19;
+            }
+        };
+
         GameMode currentGameMode = GameMode::Casual;
         // 今回の対局でAIが狙っている強さ(目安レーティング)。レート戦なら常にuserRating.Rating
         // (五分の相手)、カジュアルなら段階選択で選んだ値
@@ -1292,7 +1355,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         // 棋譜再生(Reviewing)の状態
         SgfGameRecord reviewRecord;
         int reviewMoveIndex = 0;
-        GoBoard reviewBoard(kBoardLines);
+        GoBoard reviewBoard(kDefaultBoardSize);
 
         // 棋譜再生中の局面ごとの解析結果キャッシュ(黒視点に変換済み)。要素数は総手数+1
         // (0手目〜総手数)。reviewHasCached[i]がtrueの手数のみ有効な値を持つ。
@@ -1375,9 +1438,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         // (何度でも打ち直せるようにする。初回起動時と新規対局時のセットアップを統合している)
         const auto startNewGame = [&]()
         {
-            board = GoBoard(kBoardLines);
             moveHistory.clear();
-            turnState = TurnState::ChoosingGameMode;
+            // 新規対局のたびに盤の大きさから選び直す(前回選んだ大きさに応じてboardは
+            // ChooseBoardSize9/13/19のボタン処理で作り直される)
+            turnState = TurnState::ChoosingBoardSize;
         };
 
         // レート戦/カジュアルの強さがすべて決まった後に呼ぶ。目標レーティングからmaxVisitsを
@@ -1387,7 +1451,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         const auto beginGameWithTargetRating = [&](double targetRating)
         {
             currentAiTargetRating = ClampAiTargetRating(targetRating);
-            isCurrentGamePlacement = (currentGameMode == GameMode::Ranked && userRating.GamesPlayed == 0);
+            isCurrentGamePlacement = (currentGameMode == GameMode::Ranked && CurrentUserRating().GamesPlayed == 0);
             placementTracker.Reset(isCurrentGamePlacement);
 
             const int maxVisits = ComputeMaxVisitsForRating(currentAiTargetRating);
@@ -1396,7 +1460,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 kataGoDir / L"model.bin.gz",
                 kataGoDir / L"gtp.cfg",
                 kataGoDir / L"katago_stderr.log",
-                kBoardLines, maxVisits);
+                currentBoardSize, maxVisits);
             turnState = TurnState::EngineStarting;
         };
 
@@ -1487,7 +1551,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 continue;
             }
 
-            const BoardLayout layout = ComputeBoardLayout(width, height);
+            // 描画・当たり判定の基準となる盤の目の数。棋譜再生中はその棋譜の記録上の大きさ
+            // (reviewRecord.BoardSize)、それ以外は現在の対局の盤(board.Size())を使う
+            const int activeBoardSize = (turnState == TurnState::Reviewing) ? reviewRecord.BoardSize : board.Size();
+            const BoardLayout layout = ComputeBoardLayout(width, height, activeBoardSize);
 
             // マウス位置をワールド座標(原点は画面左下、Y-up)へ変換する。GetClientMousePosition()は
             // Win32標準のクライアント座標(原点は左上、Y-down)を返すため、Yを反転する
@@ -1504,7 +1571,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             int hoverRow = -1;
             int hoverCol = -1;
             const bool isHovering = mouseInWindow &&
-                TryGetHoveredIntersection(layout, mouseWorldX, mouseWorldY, hoverRow, hoverCol) &&
+                TryGetHoveredIntersection(layout, mouseWorldX, mouseWorldY, activeBoardSize, hoverRow, hoverCol) &&
                 board.At(hoverRow, hoverCol) == Stone::Empty;
 
             const bool clicked = renderer.WasMouseButtonPressed(MouseButton::Left);
@@ -1529,7 +1596,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             // 終了・対局モード/強さ選択)を行うボタン行。表示内容は対局の進行状態(turnState)に
             // 応じて変える
             std::vector<ButtonSpec> buttonSpecs;
-            if (turnState == TurnState::ChoosingGameMode)
+            if (turnState == TurnState::ChoosingBoardSize)
+            {
+                buttonSpecs.push_back({ ButtonId::ChooseBoardSize9, L"9路", true, false });
+                buttonSpecs.push_back({ ButtonId::ChooseBoardSize13, L"13路", true, false });
+                buttonSpecs.push_back({ ButtonId::ChooseBoardSize19, L"19路", true, false });
+            }
+            else if (turnState == TurnState::ChoosingGameMode)
             {
                 buttonSpecs.push_back({ ButtonId::ChooseRanked, L"レート戦", true, false });
                 buttonSpecs.push_back({ ButtonId::ChooseCasual, L"カジュアル", true, false });
@@ -1599,28 +1672,43 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     case ButtonId::ReviewNext:      reviewNextPressed = true; break;
                     case ButtonId::NewGame:         newGamePressed = true; break;
                     case ButtonId::Quit:            renderer.Close(); break;
+                    case ButtonId::ChooseBoardSize9:
+                        currentBoardSize = 9;
+                        board = GoBoard(currentBoardSize);
+                        turnState = TurnState::ChoosingGameMode;
+                        break;
+                    case ButtonId::ChooseBoardSize13:
+                        currentBoardSize = 13;
+                        board = GoBoard(currentBoardSize);
+                        turnState = TurnState::ChoosingGameMode;
+                        break;
+                    case ButtonId::ChooseBoardSize19:
+                        currentBoardSize = 19;
+                        board = GoBoard(currentBoardSize);
+                        turnState = TurnState::ChoosingGameMode;
+                        break;
                     case ButtonId::ChooseRanked:
                         currentGameMode = GameMode::Ranked;
-                        beginGameWithTargetRating(userRating.Rating);
+                        beginGameWithTargetRating(CurrentUserRating().Rating);
                         break;
                     case ButtonId::ChooseCasual:
                         currentGameMode = GameMode::Casual;
                         turnState = TurnState::ChoosingCasualStrength;
                         break;
                     case ButtonId::StrengthMuchWeaker:
-                        beginGameWithTargetRating(userRating.Rating + kCasualStrengthOffsets[0]);
+                        beginGameWithTargetRating(CurrentUserRating().Rating + kCasualStrengthOffsets[0]);
                         break;
                     case ButtonId::StrengthWeaker:
-                        beginGameWithTargetRating(userRating.Rating + kCasualStrengthOffsets[1]);
+                        beginGameWithTargetRating(CurrentUserRating().Rating + kCasualStrengthOffsets[1]);
                         break;
                     case ButtonId::StrengthRecommended:
-                        beginGameWithTargetRating(userRating.Rating + kCasualStrengthOffsets[2]);
+                        beginGameWithTargetRating(CurrentUserRating().Rating + kCasualStrengthOffsets[2]);
                         break;
                     case ButtonId::StrengthStronger:
-                        beginGameWithTargetRating(userRating.Rating + kCasualStrengthOffsets[3]);
+                        beginGameWithTargetRating(CurrentUserRating().Rating + kCasualStrengthOffsets[3]);
                         break;
                     case ButtonId::StrengthMuchStronger:
-                        beginGameWithTargetRating(userRating.Rating + kCasualStrengthOffsets[4]);
+                        beginGameWithTargetRating(CurrentUserRating().Rating + kCasualStrengthOffsets[4]);
                         break;
                     case ButtonId::ShowMistakeStats:
                         statsReturnState = turnState;
@@ -1742,12 +1830,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         const bool converged = placementTracker.Update(latestAnalysis.WinrateForColorToMove);
                         if (converged)
                         {
+                            RatingData& userRating = CurrentUserRating();
                             userRating.Rating = placementTracker.CurrentEstimate();
                             userRating.GamesPlayed += 1;
                             placementTracker.Active = false;
                             try
                             {
-                                AppendRatingEntry(ratingPath, BuildTimestamp(std::chrono::system_clock::now()),
+                                AppendRatingEntry(CurrentRatingPath(), BuildTimestamp(std::chrono::system_clock::now()),
                                     userRating.Rating, "PLACEMENT");
                             }
                             catch (const std::exception& e)
@@ -1784,7 +1873,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 if (resignPressed)
                 {
                     renderer.PlaySound(gameEndSound);
-                    lastSavedGamePath = FinalizeGameResult(gamesDir, ratingPath, moveHistory, "W+R", currentGameMode, currentAiTargetRating, isCurrentGamePlacement, userRating);
+                    lastSavedGamePath = FinalizeGameResult(gamesDir, CurrentRatingPath(), moveHistory, "W+R", currentGameMode, currentAiTargetRating, isCurrentGamePlacement, CurrentUserRating(), currentBoardSize);
                     if (currentGameMode == GameMode::Ranked)
                     {
                         beginPostGameAnalysis(lastSavedGamePath);
@@ -1836,7 +1925,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     else if (result.IsResign)
                     {
                         renderer.PlaySound(gameEndSound);
-                        lastSavedGamePath = FinalizeGameResult(gamesDir, ratingPath, moveHistory, "B+R", currentGameMode, currentAiTargetRating, isCurrentGamePlacement, userRating);
+                        lastSavedGamePath = FinalizeGameResult(gamesDir, CurrentRatingPath(), moveHistory, "B+R", currentGameMode, currentAiTargetRating, isCurrentGamePlacement, CurrentUserRating(), currentBoardSize);
                         if (currentGameMode == GameMode::Ranked)
                         {
                             beginPostGameAnalysis(lastSavedGamePath);
@@ -1881,7 +1970,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 if (kataGo.TryGetFinalScore(score))
                 {
                     renderer.PlaySound(gameEndSound);
-                    lastSavedGamePath = FinalizeGameResult(gamesDir, ratingPath, moveHistory, score, currentGameMode, currentAiTargetRating, isCurrentGamePlacement, userRating);
+                    lastSavedGamePath = FinalizeGameResult(gamesDir, CurrentRatingPath(), moveHistory, score, currentGameMode, currentAiTargetRating, isCurrentGamePlacement, CurrentUserRating(), currentBoardSize);
                     if (currentGameMode == GameMode::Ranked)
                     {
                         beginPostGameAnalysis(lastSavedGamePath);
@@ -1906,7 +1995,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     {
                         reviewRecord = ReadSgfFile(lastSavedGamePath);
                         reviewMoveIndex = 0;
-                        reviewBoard = GoBoard(kBoardLines);
+                        reviewBoard = GoBoard(reviewRecord.BoardSize);
                         hasAnalysis = false; // 直前の対局の解析結果を棋譜再生画面に持ち越さない
                         reviewWinrateCache.assign(reviewRecord.Moves.size() + 1, 0.5f);
                         reviewScoreLeadCache.assign(reviewRecord.Moves.size() + 1, 0.0f);
@@ -1950,7 +2039,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 }
                 if (indexChanged)
                 {
-                    reviewBoard = ReplayMoves(reviewRecord.Moves, reviewMoveIndex, kBoardLines);
+                    reviewBoard = ReplayMoves(reviewRecord.Moves, reviewMoveIndex, reviewRecord.BoardSize);
                 }
                 triggerReviewAnalysisIfNeeded();
                 break;
@@ -1988,7 +2077,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             }
             else
             {
-                DrawBoard(renderer, whiteTexture, layout);
+                DrawBoard(renderer, whiteTexture, layout, activeBoardSize);
                 if (hasAnalysis && territoryOverlayEnabled)
                 {
                     DrawTerritoryOverlay(renderer, displayBoard, layout, whiteTexture, latestAnalysis);
@@ -2025,7 +2114,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 }
                 DrawHud(renderer, layout, turnState, displayBoard,
                     reviewMoveIndex, static_cast<int>(reviewRecord.Moves.size()), reviewRecord.Result,
-                    userRating.Rating, currentGameMode, currentAiTargetRating,
+                    CurrentUserRating().Rating, currentGameMode, currentAiTargetRating,
                     placementTracker.Active, placementTracker.CurrentEstimate(),
                     postGameAnalysisActive, postGameAnalysisIndex,
                     static_cast<int>(postGameAnalysisMoves.size()));
