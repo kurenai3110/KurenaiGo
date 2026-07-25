@@ -3,9 +3,10 @@
 // GTP(Go Text Protocol)で動かして人間(黒)とKataGo(白)の対局を行う。
 // 座標系はワールド=ピクセル座標(原点は画面左下、Y-up)。
 //
-// 操作: 交点クリックで着手 / Pキーでパス / Rキーで投了 / Tキーで地合い表示切替 /
-//       Hキーで着手ヒント表示切替 / 対局終了後Vキーで棋譜再生 / 再生中は←→キーで手を戻す・進める /
-//       Escで終了
+// 操作: 交点クリックで着手。着手以外の操作(パス・投了・地合い表示切替・着手ヒント表示切替・
+//       棋譜再生・終了)は盤下のボタン行から行う。キーボードでも同じ操作が可能:
+//       Pキーでパス / Rキーで投了 / Tキーで地合い表示切替 / Hキーで着手ヒント表示切替 /
+//       対局終了後Vキーで棋譜再生 / 再生中は←→キーで手を戻す・進める / Escで終了
 
 #include <Windows.h>
 
@@ -62,8 +63,11 @@ namespace
     // 19路盤の星(hoshi)の位置。0-indexed(0〜18)で、標準的な4線交点
     constexpr std::array<int, 3> kHoshiIndices = { 3, 9, 15 };
 
+    // 盤の下に確保する操作ボタン行の高さ。ComputeBoardLayoutはこの分を除いた領域に盤を配置する
+    constexpr float kButtonBarHeight = 64.0f;
+
     constexpr uint32_t kWindowWidth = 900;
-    constexpr uint32_t kWindowHeight = 900;
+    constexpr uint32_t kWindowHeight = 900 + static_cast<uint32_t>(kButtonBarHeight);
 
     // 盤(木目)が画面短辺に対して占める割合。残りは外周の余白
     constexpr float kBoardExtentRatio = 0.88f;
@@ -113,6 +117,21 @@ namespace
     constexpr float kHudFontSize = 18.0f;
     constexpr float kHudColorR = 0.92f, kHudColorG = 0.92f, kHudColorB = 0.90f;
 
+    // 操作ボタン(パス・投了・地合い表示切替・着手ヒント表示切替・棋譜再生・終了)の見た目
+    constexpr float kButtonHeight = 40.0f;
+    constexpr float kButtonPaddingX = 14.0f;
+    constexpr float kButtonMinWidth = 88.0f;
+    constexpr float kButtonSpacing = 10.0f;
+    constexpr float kButtonFontSize = 16.0f;
+    // 通常時・ホバー時・トグルON時・無効時の背景色
+    constexpr float kButtonColorR = 0.30f, kButtonColorG = 0.30f, kButtonColorB = 0.34f;
+    constexpr float kButtonHoverColorR = 0.42f, kButtonHoverColorG = 0.42f, kButtonHoverColorB = 0.48f;
+    constexpr float kButtonActiveColorR = 0.30f, kButtonActiveColorG = 0.55f, kButtonActiveColorB = 0.35f;
+    constexpr float kButtonDisabledColorR = 0.18f, kButtonDisabledColorG = 0.18f, kButtonDisabledColorB = 0.20f;
+    // 通常時・無効時の文字色
+    constexpr float kButtonTextColorR = 0.95f, kButtonTextColorG = 0.95f, kButtonTextColorB = 0.95f;
+    constexpr float kButtonDisabledTextColorR = 0.5f, kButtonDisabledTextColorG = 0.5f, kButtonDisabledTextColorB = 0.5f;
+
     const wchar_t* kWindowTitle = L"KurenaiGo";
 
     // 現在のウィンドウサイズから盤のレイアウト(中心・格子の一辺・目の間隔)を求める
@@ -127,11 +146,13 @@ namespace
 
     BoardLayout ComputeBoardLayout(uint32_t windowWidth, uint32_t windowHeight)
     {
-        const float minDimension = static_cast<float>((std::min)(windowWidth, windowHeight));
+        // 盤の描画領域はウィンドウ下端の操作ボタン行(kButtonBarHeight)を除いた範囲とする
+        const float boardAreaHeight = (std::max)(1.0f, static_cast<float>(windowHeight) - kButtonBarHeight);
+        const float minDimension = (std::min)(static_cast<float>(windowWidth), boardAreaHeight);
 
         BoardLayout layout;
         layout.CenterX = static_cast<float>(windowWidth) * 0.5f;
-        layout.CenterY = static_cast<float>(windowHeight) * 0.5f;
+        layout.CenterY = kButtonBarHeight + boardAreaHeight * 0.5f;
         layout.BoardExtent = minDimension * kBoardExtentRatio;
         layout.GridExtent = layout.BoardExtent * kGridExtentRatio;
         layout.LineSpacing = layout.GridExtent / static_cast<float>(kBoardLines - 1);
@@ -413,6 +434,121 @@ namespace
             kHudFontSize, kHudColorR, kHudColorG, kHudColorB, 1.0f);
     }
 
+    // ボタン1個の識別子。着手以外の操作(パス・投了・地合い表示切替・着手ヒント表示切替・
+    // 棋譜再生・終了)にそれぞれ対応する
+    enum class ButtonId
+    {
+        ToggleTerritory,
+        ToggleHint,
+        Pass,
+        Resign,
+        StartReview,
+        ReviewPrev,
+        ReviewNext,
+        Quit,
+    };
+
+    // 1フレーム分のボタン行を組み立てる際の仕様(ラベル・有効/無効・トグルON状態)
+    struct ButtonSpec
+    {
+        ButtonId Id;
+        std::wstring Label;
+        bool Enabled = true;
+        bool Active = false; // トグル系ボタンがON状態かどうか(背景色に反映)
+    };
+
+    // ButtonSpecから求めたヒット領域(中心x, y基準)
+    struct ButtonRect
+    {
+        ButtonId Id = ButtonId::Quit;
+        float CenterX = 0.0f;
+        float CenterY = 0.0f;
+        float Width = 0.0f;
+        float Height = 0.0f;
+        bool Enabled = true;
+        bool Active = false;
+    };
+
+    // ラベル文字列のおおよその描画幅を見積もる。KurenaiEngine2Dは実測用のAPIを公開していないため、
+    // ASCII(半角)はfontSizeの約0.55倍、それ以外(かな漢字などの全角文字)は約1.0倍として概算する
+    float EstimateTextWidth(const std::wstring& text, float fontSize)
+    {
+        float width = 0.0f;
+        for (wchar_t ch : text)
+        {
+            const bool isHalfWidth = ch < 0x100;
+            width += fontSize * (isHalfWidth ? 0.55f : 1.0f);
+        }
+        return width;
+    }
+
+    // ボタン仕様のリストを、盤の左端を起点に左詰めで1行に並べたヒット領域のリストへ変換する
+    std::vector<ButtonRect> LayoutButtonRow(const std::vector<ButtonSpec>& specs, const BoardLayout& layout)
+    {
+        std::vector<ButtonRect> rects;
+        rects.reserve(specs.size());
+
+        float cursorX = layout.CenterX - layout.GridExtent * 0.5f;
+        const float centerY = kButtonBarHeight * 0.5f;
+        for (const ButtonSpec& spec : specs)
+        {
+            const float width = (std::max)(kButtonMinWidth, EstimateTextWidth(spec.Label, kButtonFontSize) + kButtonPaddingX * 2.0f);
+
+            ButtonRect rect;
+            rect.Id = spec.Id;
+            rect.Width = width;
+            rect.Height = kButtonHeight;
+            rect.CenterX = cursorX + width * 0.5f;
+            rect.CenterY = centerY;
+            rect.Enabled = spec.Enabled;
+            rect.Active = spec.Active;
+            rects.push_back(rect);
+
+            cursorX += width + kButtonSpacing;
+        }
+        return rects;
+    }
+
+    bool IsPointInButton(const ButtonRect& button, float worldX, float worldY)
+    {
+        return worldX >= button.CenterX - button.Width * 0.5f && worldX <= button.CenterX + button.Width * 0.5f &&
+            worldY >= button.CenterY - button.Height * 0.5f && worldY <= button.CenterY + button.Height * 0.5f;
+    }
+
+    // ボタン1個の背景と文字を描画する。ホバー/トグルON/無効状態に応じて背景色を変える
+    void DrawButton(KurenaiEngine2D& renderer, TextureHandle whiteTexture, const ButtonRect& button,
+        const std::wstring& label, bool isHovered)
+    {
+        float r = kButtonColorR, g = kButtonColorG, b = kButtonColorB;
+        if (!button.Enabled)
+        {
+            r = kButtonDisabledColorR; g = kButtonDisabledColorG; b = kButtonDisabledColorB;
+        }
+        else if (button.Active)
+        {
+            r = kButtonActiveColorR; g = kButtonActiveColorG; b = kButtonActiveColorB;
+        }
+        else if (isHovered)
+        {
+            r = kButtonHoverColorR; g = kButtonHoverColorG; b = kButtonHoverColorB;
+        }
+
+        renderer.DrawSprite(button.CenterX, button.CenterY, button.Width, button.Height, 0.0f, whiteTexture, r, g, b, 1.0f);
+
+        const float textWidth = EstimateTextWidth(label, kButtonFontSize);
+        const float textX = button.CenterX - textWidth * 0.5f;
+        const float textY = button.CenterY - kButtonFontSize * 0.5f;
+        if (button.Enabled)
+        {
+            renderer.DrawText(textX, textY, label, kButtonFontSize, kButtonTextColorR, kButtonTextColorG, kButtonTextColorB, 1.0f);
+        }
+        else
+        {
+            renderer.DrawText(textX, textY, label, kButtonFontSize,
+                kButtonDisabledTextColorR, kButtonDisabledTextColorG, kButtonDisabledTextColorB, 1.0f);
+        }
+    }
+
     // 現在時刻から"game_YYYYMMDD_HHMMSS.sgf"形式のファイル名を組み立てる
     std::wstring BuildGameFileName(std::chrono::system_clock::time_point when)
     {
@@ -548,21 +684,28 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 
             // マウス位置をワールド座標(原点は画面左下、Y-up)へ変換する。GetClientMousePosition()は
             // Win32標準のクライアント座標(原点は左上、Y-down)を返すため、Yを反転する
-            int hoverRow = -1;
-            int hoverCol = -1;
-            bool isHovering = false;
-            if (renderer.IsMouseOverWindow())
+            const bool mouseInWindow = renderer.IsMouseOverWindow();
+            float mouseWorldX = 0.0f;
+            float mouseWorldY = 0.0f;
+            if (mouseInWindow)
             {
                 const POINT cursor = renderer.GetClientMousePosition();
-                const float worldX = static_cast<float>(cursor.x);
-                const float worldY = static_cast<float>(height) - static_cast<float>(cursor.y);
-                isHovering = TryGetHoveredIntersection(layout, worldX, worldY, hoverRow, hoverCol) &&
-                    board.At(hoverRow, hoverCol) == Stone::Empty;
+                mouseWorldX = static_cast<float>(cursor.x);
+                mouseWorldY = static_cast<float>(height) - static_cast<float>(cursor.y);
             }
 
+            int hoverRow = -1;
+            int hoverCol = -1;
+            const bool isHovering = mouseInWindow &&
+                TryGetHoveredIntersection(layout, mouseWorldX, mouseWorldY, hoverRow, hoverCol) &&
+                board.At(hoverRow, hoverCol) == Stone::Empty;
+
             const bool clicked = renderer.WasMouseButtonPressed(MouseButton::Left);
-            const bool passPressed = renderer.WasKeyPressed('P');
-            const bool resignPressed = renderer.WasKeyPressed('R');
+            bool passPressed = renderer.WasKeyPressed('P');
+            bool resignPressed = renderer.WasKeyPressed('R');
+            bool reviewStartPressed = renderer.WasKeyPressed('V');
+            bool reviewPrevPressed = renderer.WasKeyPressed(VK_LEFT);
+            bool reviewNextPressed = renderer.WasKeyPressed(VK_RIGHT);
 
             if (renderer.WasKeyPressed('T'))
             {
@@ -572,6 +715,54 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             if (renderer.WasKeyPressed('H'))
             {
                 hintOverlayEnabled = !hintOverlayEnabled;
+            }
+
+            // 着手以外の操作(パス・投了・地合い表示切替・着手ヒント表示切替・棋譜再生・終了)を
+            // 行うボタン行。表示内容は対局の進行状態(turnState)に応じて変える
+            std::vector<ButtonSpec> buttonSpecs;
+            buttonSpecs.push_back({ ButtonId::ToggleTerritory, L"地合い表示", true, territoryOverlayEnabled });
+            buttonSpecs.push_back({ ButtonId::ToggleHint, L"着手ヒント", true, hintOverlayEnabled });
+            if (turnState == TurnState::HumanToMove)
+            {
+                buttonSpecs.push_back({ ButtonId::Pass, L"パス", true, false });
+                buttonSpecs.push_back({ ButtonId::Resign, L"投了", true, false });
+            }
+            if (turnState == TurnState::GameOver && !lastSavedGamePath.empty())
+            {
+                buttonSpecs.push_back({ ButtonId::StartReview, L"棋譜再生", true, false });
+            }
+            if (turnState == TurnState::Reviewing)
+            {
+                const bool canGoPrev = reviewMoveIndex > 0;
+                const bool canGoNext = reviewMoveIndex < static_cast<int>(reviewRecord.Moves.size());
+                buttonSpecs.push_back({ ButtonId::ReviewPrev, L"前の手", canGoPrev, false });
+                buttonSpecs.push_back({ ButtonId::ReviewNext, L"次の手", canGoNext, false });
+            }
+            buttonSpecs.push_back({ ButtonId::Quit, L"終了", true, false });
+
+            const std::vector<ButtonRect> buttonRects = LayoutButtonRow(buttonSpecs, layout);
+
+            if (mouseInWindow && clicked)
+            {
+                for (const ButtonRect& button : buttonRects)
+                {
+                    if (!button.Enabled || !IsPointInButton(button, mouseWorldX, mouseWorldY))
+                    {
+                        continue;
+                    }
+                    switch (button.Id)
+                    {
+                    case ButtonId::ToggleTerritory: territoryOverlayEnabled = !territoryOverlayEnabled; break;
+                    case ButtonId::ToggleHint:      hintOverlayEnabled = !hintOverlayEnabled; break;
+                    case ButtonId::Pass:            passPressed = true; break;
+                    case ButtonId::Resign:          resignPressed = true; break;
+                    case ButtonId::StartReview:     reviewStartPressed = true; break;
+                    case ButtonId::ReviewPrev:      reviewPrevPressed = true; break;
+                    case ButtonId::ReviewNext:      reviewNextPressed = true; break;
+                    case ButtonId::Quit:            renderer.Close(); break;
+                    }
+                    break; // ボタンは重ならない配置のため、1個ヒットしたら以降は調べない
+                }
             }
 
             // 解析結果のポーリング(HumanToMove遷移時にenterHumanToMove()から要求している)
@@ -697,7 +888,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             }
 
             case TurnState::GameOver:
-                if (renderer.WasKeyPressed('V') && !lastSavedGamePath.empty())
+                if (reviewStartPressed && !lastSavedGamePath.empty())
                 {
                     try
                     {
@@ -719,12 +910,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             {
                 const int totalMoves = static_cast<int>(reviewRecord.Moves.size());
                 bool indexChanged = false;
-                if (renderer.WasKeyPressed(VK_RIGHT) && reviewMoveIndex < totalMoves)
+                if (reviewNextPressed && reviewMoveIndex < totalMoves)
                 {
                     ++reviewMoveIndex;
                     indexChanged = true;
                 }
-                else if (renderer.WasKeyPressed(VK_LEFT) && reviewMoveIndex > 0)
+                else if (reviewPrevPressed && reviewMoveIndex > 0)
                 {
                     --reviewMoveIndex;
                     indexChanged = true;
@@ -756,6 +947,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             }
             DrawHud(renderer, layout, turnState, displayBoard,
                 reviewMoveIndex, static_cast<int>(reviewRecord.Moves.size()), reviewRecord.Result);
+
+            // 着手以外の操作ボタンを盤下のボタン行に描画する
+            for (size_t i = 0; i < buttonRects.size(); ++i)
+            {
+                const bool isButtonHovered = mouseInWindow && IsPointInButton(buttonRects[i], mouseWorldX, mouseWorldY);
+                DrawButton(renderer, whiteTexture, buttonRects[i], buttonSpecs[i].Label, isButtonHovered);
+            }
 
             // 手番中、カーソルが空点の交点上にあれば半透明のプレビューを表示する
             if (turnState == TurnState::HumanToMove && isHovering)
