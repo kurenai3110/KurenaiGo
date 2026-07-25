@@ -187,6 +187,29 @@ namespace
     constexpr float kButtonHeight = 40.0f;
     constexpr float kButtonSpacing = 10.0f; // ボタン間の縦の隙間
     constexpr float kButtonFontSize = 19.0f;
+
+    // カジュアル対局の強さ選択(11.6節)用、盤上に表示するタブ+5列2行グリッドの見た目。
+    // ButtonSpec/ButtonRect/IsPointInButtonは右側縦列と共通のものを再利用するが、タブ
+    // (範囲切替)とグリッド(具体的な強さの決定)は役割が異なるため、DrawButtonにButtonStyleを
+    // 渡して形状・配色を変え、見た目でも区別できるようにしている。
+    // ボタン(タブ・グリッドとも)の横幅は固定値ではなく、盤の一番外側の線の内側に(左右に
+    // kCasualOuterMarginずつ余白を残して)収まるよう、盤の格子の一辺(layout.GridExtent、
+    // 盤の大きさによらず常に同じピクセル値)から逆算する(LayoutCasualGroupTabs/
+    // LayoutCasualRankGrid参照)。ボタン間の隙間・高さのみ固定値を使う
+    constexpr float kCasualOuterMargin = 24.0f; // 盤の一番外側の線とボタン列の間の余白(左右)
+    constexpr int kCasualGridColumns = 5;
+    constexpr float kCasualGridSpacing = 10.0f; // グリッドのボタン間の隙間(縦横とも)
+    constexpr float kCasualGridFontSize = 28.0f;
+    constexpr float kCasualGridCornerRadius = 6.0f; // タブより角ばった、キーパッド風の見た目
+
+    constexpr float kCasualTabSpacing = 16.0f; // タブ間の隙間
+    constexpr float kCasualTabButtonHeight = 56.0f;
+    constexpr float kCasualTabFontSize = 28.0f;
+    // タブは範囲切替であることが一目で分かるよう、グリッド(ニュートラルな灰色)とは異なる
+    // 青みがかった配色にする
+    constexpr float kCasualTabColorR = 0.20f, kCasualTabColorG = 0.30f, kCasualTabColorB = 0.42f;
+    constexpr float kCasualTabHoverColorR = 0.28f, kCasualTabHoverColorG = 0.40f, kCasualTabHoverColorB = 0.54f;
+    constexpr float kCasualTabBorderColorR = 0.45f, kCasualTabBorderColorG = 0.62f, kCasualTabBorderColorB = 0.80f;
     // 通常時・ホバー時・トグルON時・無効時の背景色
     constexpr float kButtonColorR = 0.30f, kButtonColorG = 0.30f, kButtonColorB = 0.34f;
     constexpr float kButtonHoverColorR = 0.42f, kButtonHoverColorG = 0.42f, kButtonHoverColorB = 0.48f;
@@ -607,7 +630,9 @@ namespace
 
     // レーティング(目安)→AIの強さ(maxVisits、10章参照)の写像。visits数と実際の対局相手としての
     // 強さの対応関係はハードウェア・局面・ネットワークに依存し普遍的な換算式は存在しないため、
-    // これは調整可能な単純な目安であり科学的に較正された対応表ではない
+    // これは調整可能な単純な目安であり科学的に較正された対応表ではない。
+    // 現在はHuman SLモデル(11.6節、下記RankIndexForRating等)が使えない場合の
+    // フォールバック専用として残している
     constexpr int kMinAiVisits = 20;    // 弱め(浅い探索)
     constexpr int kMaxAiVisits = 500;   // gtp.cfgの元の既定値をそのまま上限に使う
     constexpr double kAiStrengthScalingMinRating = 1000.0; // これ以下はkMinAiVisits
@@ -628,17 +653,94 @@ namespace
         return static_cast<int>(std::lround(kMinAiVisits + t * (kMaxAiVisits - kMinAiVisits)));
     }
 
-    // 表示・保存するAIの目標レーティングを、実際に強さとして反映できる範囲にクランプする
-    // (この範囲を超えてもComputeMaxVisitsForRatingの結果は変わらないため、表示上の
-    // 誤解(実際より強い/弱いAIだと思わせる)を避ける)
-    double ClampAiTargetRating(double rating)
+    // レーティング(0〜上限なし)↔段級位インデックスの変換(11.6節参照)。
+    // 段級位インデックスは30級=0、1級=29、1段=30、9段=38、以降10段・11段…も上限なく続く
+    // 整数の目安。1段のレーティングがちょうど1000になるよう、レーティングを
+    // インデックスの3乗に比例させる(rating = index^3 / 27、index = 3 * cbrt(rating))。
+    // 段位が上がるほど1段上がるのに必要なレーティング差が大きくなるという直感に合わせた
+    // 調整可能な目安であり、科学的な較正ではない
+    constexpr int kRankIndexForOneDan = 30; // 30級(index0)〜1級(index29)の30段階の直後が1段
+    constexpr double kRatingForOneDan = 1000.0;
+
+    double RankIndexForRating(double rating)
     {
-        return (std::max)(kAiStrengthScalingMinRating, (std::min)(kAiStrengthScalingMaxRating, rating));
+        const double clamped = (std::max)(0.0, rating);
+        return kRankIndexForOneDan * std::cbrt(clamped / kRatingForOneDan);
     }
 
-    // カジュアル対局の強さ段階選択で使うオフセット(おすすめ=自分のレーティングからの相対値)。
-    // ComputeMaxVisitsForRatingの写像と同様、調整可能な目安の一例
-    constexpr double kCasualStrengthOffsets[] = { -400.0, -200.0, 0.0, 200.0, 400.0 };
+    double RatingForRankIndex(double rankIndex)
+    {
+        return (rankIndex * rankIndex * rankIndex) / 27.0;
+    }
+
+    // 段級位インデックス→表示用の日本語文字列("30級"〜"1級","1段"〜)。上限なく続ける
+    std::wstring DisplayRankTextForRankIndex(int rankIndex)
+    {
+        if (rankIndex < kRankIndexForOneDan)
+        {
+            return std::to_wstring(kRankIndexForOneDan - rankIndex) + L"級";
+        }
+        return std::to_wstring(rankIndex - kRankIndexForOneDan + 1) + L"段";
+    }
+
+    // KataGoのhumanSLProfileが実際にサポートするのは20級〜9段のみ(同梱gtp_human5k_example.cfgの
+    // コメント記載の範囲、"RANK from 20k to 9d")。表示用の段級位(DisplayRankTextForRankIndex)は
+    // この範囲外もそのまま見せるが、実際にKataGoへ渡すプロファイル文字列だけはこの範囲へ
+    // クランプしてから作る
+    constexpr int kHumanSLMinRankIndex = kRankIndexForOneDan - 20; // 20級
+    constexpr int kHumanSLMaxRankIndex = kRankIndexForOneDan + 9 - 1; // 9段
+
+    // Human SLモデル使用時のmaxVisits(同梱gtp_human5k_example.cfgの既定値を踏襲)。
+    // この値は着手選択そのものには使われず(humanSLChosenMoveProp=1.0のため)、
+    // パス/投了判定用の探索にのみ使う設計のため、レーティングによる可変スケーリングは行わない
+    constexpr int kHumanSLMaxVisits = 40;
+
+    std::string HumanSLProfileSuffixForRankIndex(int rankIndex)
+    {
+        const int clamped = (std::max)(kHumanSLMinRankIndex, (std::min)(kHumanSLMaxRankIndex, rankIndex));
+        if (clamped < kRankIndexForOneDan)
+        {
+            return std::to_string(kRankIndexForOneDan - clamped) + "k";
+        }
+        return std::to_string(clamped - kRankIndexForOneDan + 1) + "d";
+    }
+
+    // カジュアル対局の強さ選択(盤上のタブ+5列2行グリッド、11.6節)用。タブ番号
+    // (0=20〜11級, 1=10〜1級, 2=1〜9段)とグリッド内スロット番号(0〜9)から段級位
+    // インデックスを求める。タブ2(段)はスロット9が存在しない(1〜9段の9個のみ)
+    int RankIndexForCasualSlot(int group, int slot)
+    {
+        switch (group)
+        {
+        case 0:  return kHumanSLMinRankIndex + slot;               // 20級(idx10)〜11級(idx19)
+        case 1:  return kHumanSLMinRankIndex + 10 + slot;          // 10級(idx20)〜1級(idx29)
+        default: return kRankIndexForOneDan + slot;                // 1段(idx30)〜9段(idx38)
+        }
+    }
+
+    // 現在のレーティングが属するカジュアル強さタブ(0/1/2)を求める(範囲外は端のタブに寄せる)
+    int CasualGroupForRating(double rating)
+    {
+        const int rankIndex = static_cast<int>(std::lround(RankIndexForRating(rating)));
+        if (rankIndex < kHumanSLMinRankIndex + 10)
+        {
+            return 0;
+        }
+        if (rankIndex < kRankIndexForOneDan)
+        {
+            return 1;
+        }
+        return 2;
+    }
+
+    // 初期レーティング決定(プレースメント)モードはいったん無効化している。
+    // 基準点をkInitialRating=1500(標準的なElo初期値)から0(30級相当、11.6節の段級位換算に
+    // 合わせた値)へ変更したことに伴い、EMA・収束判定まわりの初期値も合わせて再検討する
+    // 必要があるため、再設計が済むまでfalseにしておく(falseの間はisCurrentGamePlacementが
+    // 常にfalseになり、対局回数0のユーザーも通常のレート戦としてレーティング0から即座に
+    // 対局を始める。PlacementTracker本体・以下のコメント・finalizePlacementRating等の
+    // コードは再有効化に備えて削除せず残している)
+    constexpr bool kPlacementModeEnabled = false;
 
     // 初期レーティング決定(プレースメント)モード: 対局回数0のままレート戦を始めた場合のみ
     // 発動する。黒(人間)の手番ごとに得られるkata-analyzeの勝率(WinrateForColorToMove)を
@@ -769,8 +871,8 @@ namespace
         }
         if (turnState == TurnState::ChoosingCasualStrength)
         {
-            return L"カジュアル対局の強さを選んでください(おすすめ: " +
-                std::to_wstring(std::lround(userRating)) + L")";
+            return L"カジュアル対局の強さを選んでください"
+                L"(上のタブで級/段の範囲を切り替え、グリッドから具体的な強さを選べます)";
         }
 
         std::wstring text;
@@ -810,7 +912,9 @@ namespace
             text += L"   レーティング:" + std::to_wstring(std::lround(userRating)) +
                 L" [" + (gameMode == GameMode::Ranked ? L"レート戦" : L"カジュアル") + L"]";
         }
-        text += L"   AI強さ(目安):" + std::to_wstring(std::lround(aiTargetRating));
+        text += L"   AI強さ(目安):" + std::to_wstring(std::lround(aiTargetRating)) +
+            L" [" + DisplayRankTextForRankIndex(static_cast<int>(std::lround(RankIndexForRating(aiTargetRating)))) +
+            L"相当]";
         return text;
     }
 
@@ -849,11 +953,22 @@ namespace
         ChooseBoardSize19,
         ChooseRanked,
         ChooseCasual,
-        StrengthMuchWeaker,
-        StrengthWeaker,
-        StrengthRecommended,
-        StrengthStronger,
-        StrengthMuchStronger,
+        // カジュアル対局の強さ選択(盤上のタブ+5列2行グリッド、11.6節)。CasualGroup*は
+        // タブ切替(0=20〜11級/1=10〜1級/2=1〜9段)、CasualRankSlot*はグリッド内の
+        // 10マス分(1〜9段タブはスロット9を使わない)
+        CasualGroupKyu20To11,
+        CasualGroupKyu10To1,
+        CasualGroupDan1To9,
+        CasualRankSlot0,
+        CasualRankSlot1,
+        CasualRankSlot2,
+        CasualRankSlot3,
+        CasualRankSlot4,
+        CasualRankSlot5,
+        CasualRankSlot6,
+        CasualRankSlot7,
+        CasualRankSlot8,
+        CasualRankSlot9,
         ShowMistakeStats,
         BackFromStats,
     };
@@ -887,6 +1002,20 @@ namespace
         float Height = 0.0f;
         bool Enabled = true;
         bool Active = false;
+    };
+
+    // DrawButtonの見た目を役割ごとに変えるための設定(フォントサイズ・角丸・通常時/ホバー時の
+    // 配色)。既定値は右側縦列の通常ボタンの見た目と一致させてあるため、既存の呼び出し側は
+    // このstyleを省略すればこれまでどおりの見た目になる(カジュアル対局の強さ選択、11.6節の
+    // タブ・グリッドのみ専用のstyleを渡す)。無効時・トグルON時・押下時の配色は役割によらず
+    // 共通(kButtonDisabledColor*・kButtonActiveColor*・kButtonPressedDarkenFactor)のまま
+    struct ButtonStyle
+    {
+        float FontSize = kButtonFontSize;
+        float CornerRadius = kButtonCornerRadius;
+        float ColorR = kButtonColorR, ColorG = kButtonColorG, ColorB = kButtonColorB;
+        float HoverColorR = kButtonHoverColorR, HoverColorG = kButtonHoverColorG, HoverColorB = kButtonHoverColorB;
+        float BorderColorR = kButtonBorderColorR, BorderColorG = kButtonBorderColorG, BorderColorB = kButtonBorderColorB;
     };
 
     // ラベル文字列のおおよその描画幅を見積もる。KurenaiEngine2Dは実測用のAPIを公開していないため、
@@ -960,6 +1089,105 @@ namespace
         return rects;
     }
 
+    // カジュアル対局の強さ選択(11.6節)の範囲タブ3個を、盤の上部に横一列・中央揃えで配置する
+    // (グリッドとは役割が異なることを示すため、位置も盤上部に離して置く)
+    //
+    // タブの合計横幅(3個分+隙間)が盤の格子の一辺(layout.GridExtent、盤の一番外側の線から
+    // 線までの幅。盤の大きさによらず常に同じピクセル値)から左右にkCasualOuterMarginずつ
+    // 余白を残した幅にちょうど収まるよう、1個あたりの幅を逆算する(ボタンが盤の一番外側の
+    // 線の内側に収まるようにするための設計。BoardExtent/GridExtent自体はboardSizeに依存せず
+    // 常に同じピクセルサイズで描かれ、変わるのはLineSpacingだけのため、逆にLineSpacingに
+    // 比例させて拡大すると9路・13路で盤の外へあふれてしまう。実機検証で確認済み)
+    std::vector<ButtonRect> LayoutCasualGroupTabs(const std::vector<ButtonSpec>& specs, const BoardLayout& layout)
+    {
+        const float availableWidth = layout.GridExtent - kCasualOuterMargin * 2.0f;
+        const size_t count = specs.size();
+        const float gapTotal = count > 0 ? static_cast<float>(count - 1) * kCasualTabSpacing : 0.0f;
+        const float buttonWidth = count > 0 ? (availableWidth - gapTotal) / static_cast<float>(count) : 0.0f;
+        const float buttonHeight = kCasualTabButtonHeight;
+
+        std::vector<ButtonRect> rects(count);
+        const float originX = layout.CenterX - availableWidth * 0.5f + buttonWidth * 0.5f;
+        // 盤の一番外側の線(CenterY + GridExtent/2)からkCasualOuterMargin分下げた位置に
+        // タブの上端が来るように中心を置く(左右の余白と同じ考え方)
+        const float centerY = layout.CenterY + layout.GridExtent * 0.5f - kCasualOuterMargin - buttonHeight * 0.5f;
+
+        for (size_t i = 0; i < count; ++i)
+        {
+            ButtonRect rect;
+            rect.Id = specs[i].Id;
+            rect.Width = buttonWidth;
+            rect.Height = buttonHeight;
+            rect.CenterX = originX + static_cast<float>(i) * (buttonWidth + kCasualTabSpacing);
+            rect.CenterY = centerY;
+            rect.Enabled = specs[i].Enabled;
+            rect.Active = specs[i].Active;
+            rects[i] = rect;
+        }
+        return rects;
+    }
+
+    // カジュアル対局の強さ選択(11.6節)のランクボタンを、盤中央基準でkCasualGridColumns列の
+    // 正方形(1:1)グリッドに配置する(1〜9段タブは9個のため最後の1マスは空けてボタンを
+    // 置かない=specsの要素数がそのままボタン数になる)。ボタン1個の一辺は、5個分+隙間が
+    // 盤の格子の一辺から左右にkCasualOuterMarginずつ余白を残した幅にちょうど収まるよう
+    // 逆算する(理由はLayoutCasualGroupTabsのコメントを参照)
+    std::vector<ButtonRect> LayoutCasualRankGrid(const std::vector<ButtonSpec>& specs, const BoardLayout& layout)
+    {
+        const float availableWidth = layout.GridExtent - kCasualOuterMargin * 2.0f;
+        const float gapTotal = static_cast<float>(kCasualGridColumns - 1) * kCasualGridSpacing;
+        const float buttonSize = (availableWidth - gapTotal) / static_cast<float>(kCasualGridColumns);
+        const float spacingX = kCasualGridSpacing;
+        const float spacingY = kCasualGridSpacing;
+
+        std::vector<ButtonRect> rects(specs.size());
+        const int rows = (static_cast<int>(specs.size()) + kCasualGridColumns - 1) / kCasualGridColumns;
+        const float totalWidth = availableWidth;
+        const float totalHeight = static_cast<float>(rows) * buttonSize +
+            static_cast<float>(rows > 0 ? rows - 1 : 0) * spacingY;
+        const float originX = layout.CenterX - totalWidth * 0.5f + buttonSize * 0.5f;
+        const float originY = layout.CenterY + totalHeight * 0.5f - buttonSize * 0.5f; // 上段から並べる(Y-up)
+
+        for (size_t i = 0; i < specs.size(); ++i)
+        {
+            const int row = static_cast<int>(i) / kCasualGridColumns;
+            const int col = static_cast<int>(i) % kCasualGridColumns;
+            ButtonRect rect;
+            rect.Id = specs[i].Id;
+            rect.Width = buttonSize;
+            rect.Height = buttonSize;
+            rect.CenterX = originX + static_cast<float>(col) * (buttonSize + spacingX);
+            rect.CenterY = originY - static_cast<float>(row) * (buttonSize + spacingY);
+            rect.Enabled = specs[i].Enabled;
+            rect.Active = specs[i].Active;
+            rects[i] = rect;
+        }
+        return rects;
+    }
+
+    // タブ番号(0/1/2)→そのタブのButtonId
+    ButtonId CasualTabButtonId(int group)
+    {
+        switch (group)
+        {
+        case 0:  return ButtonId::CasualGroupKyu20To11;
+        case 1:  return ButtonId::CasualGroupKyu10To1;
+        default: return ButtonId::CasualGroupDan1To9;
+        }
+    }
+
+    // グリッド内スロット番号(0〜9)→そのマスのButtonId
+    ButtonId CasualSlotButtonId(int slot)
+    {
+        static constexpr ButtonId kSlotIds[] = {
+            ButtonId::CasualRankSlot0, ButtonId::CasualRankSlot1, ButtonId::CasualRankSlot2,
+            ButtonId::CasualRankSlot3, ButtonId::CasualRankSlot4, ButtonId::CasualRankSlot5,
+            ButtonId::CasualRankSlot6, ButtonId::CasualRankSlot7, ButtonId::CasualRankSlot8,
+            ButtonId::CasualRankSlot9,
+        };
+        return kSlotIds[slot];
+    }
+
     bool IsPointInButton(const ButtonRect& button, float worldX, float worldY)
     {
         return worldX >= button.CenterX - button.Width * 0.5f && worldX <= button.CenterX + button.Width * 0.5f &&
@@ -967,12 +1195,13 @@ namespace
     }
 
     // ボタン1個の背景と文字を描画する。ホバー/トグルON/無効/押下状態に応じて見た目を変える。
-    // 角丸矩形+内側枠線+ドロップシャドウはKurenaiEngine2D::DrawRoundedRectで1回の描画コールずつ描く
+    // 角丸矩形+内側枠線+ドロップシャドウはKurenaiEngine2D::DrawRoundedRectで1回の描画コールずつ描く。
+    // styleを省略すると右側縦列の通常ボタンの見た目になる(ButtonStyleの既定値参照)
     void DrawButton(KurenaiEngine2D& renderer, const ButtonRect& button,
-        const std::wstring& label, bool isHovered, bool isPressed)
+        const std::wstring& label, bool isHovered, bool isPressed, const ButtonStyle& style = ButtonStyle{})
     {
-        float r = kButtonColorR, g = kButtonColorG, b = kButtonColorB;
-        float borderR = kButtonBorderColorR, borderG = kButtonBorderColorG, borderB = kButtonBorderColorB;
+        float r = style.ColorR, g = style.ColorG, b = style.ColorB;
+        float borderR = style.BorderColorR, borderG = style.BorderColorG, borderB = style.BorderColorB;
         if (!button.Enabled)
         {
             r = kButtonDisabledColorR; g = kButtonDisabledColorG; b = kButtonDisabledColorB;
@@ -984,7 +1213,7 @@ namespace
         }
         else if (isHovered)
         {
-            r = kButtonHoverColorR; g = kButtonHoverColorG; b = kButtonHoverColorB;
+            r = style.HoverColorR; g = style.HoverColorG; b = style.HoverColorB;
         }
 
         float centerX = button.CenterX;
@@ -998,25 +1227,25 @@ namespace
         // ドロップシャドウ
         renderer.DrawRoundedRect(
             button.CenterX + kButtonShadowOffsetX, button.CenterY + kButtonShadowOffsetY,
-            button.Width, button.Height, kButtonCornerRadius,
+            button.Width, button.Height, style.CornerRadius,
             kButtonShadowColorR, kButtonShadowColorG, kButtonShadowColorB, kButtonShadowAlpha);
 
         // 本体+内側枠線
         renderer.DrawRoundedRect(
-            centerX, centerY, button.Width, button.Height, kButtonCornerRadius,
+            centerX, centerY, button.Width, button.Height, style.CornerRadius,
             r, g, b, 1.0f,
             kButtonBorderThickness, borderR, borderG, borderB, 1.0f);
 
-        const float textWidth = EstimateTextWidth(label, kButtonFontSize);
+        const float textWidth = EstimateTextWidth(label, style.FontSize);
         const float textX = centerX - textWidth * 0.5f;
-        const float textY = centerY - kButtonFontSize * 0.5f;
+        const float textY = centerY - style.FontSize * 0.5f;
         if (button.Enabled)
         {
-            renderer.DrawText(textX, textY, label, kButtonFontSize, kButtonTextColorR, kButtonTextColorG, kButtonTextColorB, 1.0f);
+            renderer.DrawText(textX, textY, label, style.FontSize, kButtonTextColorR, kButtonTextColorG, kButtonTextColorB, 1.0f);
         }
         else
         {
-            renderer.DrawText(textX, textY, label, kButtonFontSize,
+            renderer.DrawText(textX, textY, label, style.FontSize,
                 kButtonDisabledTextColorR, kButtonDisabledTextColorG, kButtonDisabledTextColorB, 1.0f);
         }
     }
@@ -1300,6 +1529,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     try
     {
         const std::filesystem::path kataGoDir = ResolveAppDataPath(L"KataGo");
+        // Human SLモデル(11.6節)。任意配置のため、実際に使うかはstd::filesystem::existsで
+        // そのつど確認する(未配置ならComputeMaxVisitsForRatingによる従来方式にフォールバックする)
+        const std::filesystem::path humanModelPath = kataGoDir / L"b18c384nbt-humanv0.bin.gz";
         const std::filesystem::path soundsDir = ResolveAppDataPath(L"Assets/Sounds");
         const std::filesystem::path gamesDir = ResolveAppDataPath(L"Games");
         // レーティングは盤の大きさ(9路/13路/19路)ごとに互いに独立して記録する(強さの基準が
@@ -1358,6 +1590,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         };
 
         GameMode currentGameMode = GameMode::Casual;
+        // カジュアル対局の強さ選択(11.6節)で現在表示中のタブ(0=20〜11級/1=10〜1級/2=1〜9段)。
+        // ChoosingCasualStrengthに入るたびに現在のレーティングに応じた既定タブへ設定し直す
+        int casualStrengthGroup = 0;
         // 今回の対局でAIが狙っている強さ(目安レーティング)。レート戦なら常にuserRating.Rating
         // (五分の相手)、カジュアルなら段階選択で選んだ値
         double currentAiTargetRating = kInitialRating;
@@ -1508,14 +1743,19 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             turnState = TurnState::ChoosingBoardSize;
         };
 
-        // レート戦/カジュアルの強さがすべて決まった後に呼ぶ。目標レーティングからmaxVisitsを
-        // 求め、KataGoを起動する(対局ごとに強さを変えるため、対局開始のたびにStartAsyncを
-        // 呼び直す。KataGoClient::StartAsyncは実行中のプロセスがあれば終了させてから作り直す
-        // ため、同一インスタンスを安全に再利用できる)
+        // レート戦/カジュアルの強さがすべて決まった後に呼ぶ。目標レーティングからHuman SLの
+        // 段級位プロファイル(またはHuman SLモデル未配置時はmaxVisits)を求め、KataGoを起動する
+        // (対局ごとに強さを変えるため、対局開始のたびにStartAsyncを呼び直す。
+        // KataGoClient::StartAsyncは実行中のプロセスがあれば終了させてから作り直すため、
+        // 同一インスタンスを安全に再利用できる)
         const auto beginGameWithTargetRating = [&](double targetRating)
         {
-            currentAiTargetRating = ClampAiTargetRating(targetRating);
-            isCurrentGamePlacement = (currentGameMode == GameMode::Ranked && CurrentUserRating().GamesPlayed == 0);
+            // 上限なしのレーティングをそのまま表示・保存に使う(11.6節。段級位表示・
+            // Human SLプロファイルの範囲クランプはそれぞれの変換関数側で行うため、ここでは
+            // クランプしない)
+            currentAiTargetRating = targetRating;
+            isCurrentGamePlacement = kPlacementModeEnabled &&
+                (currentGameMode == GameMode::Ranked && CurrentUserRating().GamesPlayed == 0);
             // 前回の対局が収束(80%)に達しないまま終わり、今回も同じ盤の大きさでプレースメントを
             // 続ける場合は、PlacementTrackerの状態(EMA・サンプル)をリセットせず引き継ぐ
             // (でないと収束率が対局のたびに0%へ戻ってしまう)。それ以外(プレースメントで
@@ -1527,10 +1767,24 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 placementTracker.Reset(isCurrentGamePlacement, currentBoardSize);
             }
 
-            const int maxVisits = ComputeMaxVisitsForRating(currentAiTargetRating);
+            const bool useHumanSL = std::filesystem::exists(humanModelPath);
+            std::string humanSLProfile;
+            int maxVisits;
+            if (useHumanSL)
+            {
+                const int rankIndex = static_cast<int>(std::lround(RankIndexForRating(currentAiTargetRating)));
+                humanSLProfile = "rank_" + HumanSLProfileSuffixForRankIndex(rankIndex);
+                maxVisits = kHumanSLMaxVisits;
+            }
+            else
+            {
+                maxVisits = ComputeMaxVisitsForRating(currentAiTargetRating);
+            }
+
             kataGo.StartAsync(
                 kataGoDir / L"katago.exe",
                 kataGoDir / L"model.bin.gz",
+                humanModelPath, humanSLProfile,
                 kataGoDir / L"gtp.cfg",
                 kataGoDir / L"katago_stderr.log",
                 currentBoardSize, maxVisits);
@@ -1680,13 +1934,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 buttonSpecs.push_back({ ButtonId::ChooseRanked, L"レート戦", true, false });
                 buttonSpecs.push_back({ ButtonId::ChooseCasual, L"カジュアル", true, false });
             }
+            // ChoosingCasualStrengthの間は右側縦列にボタンを出さない(強さ選択は下記の
+            // 盤中央のタブ+グリッドで行う、11.6節参照)。Quitボタンのみ以下で共通追加される
             else if (turnState == TurnState::ChoosingCasualStrength)
             {
-                buttonSpecs.push_back({ ButtonId::StrengthMuchWeaker, L"とても弱め", true, false });
-                buttonSpecs.push_back({ ButtonId::StrengthWeaker, L"弱め", true, false });
-                buttonSpecs.push_back({ ButtonId::StrengthRecommended, L"おすすめ", true, false });
-                buttonSpecs.push_back({ ButtonId::StrengthStronger, L"強め", true, false });
-                buttonSpecs.push_back({ ButtonId::StrengthMuchStronger, L"とても強め", true, false });
             }
             else if (turnState == TurnState::ViewingMistakeStats)
             {
@@ -1725,6 +1976,61 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             buttonSpecs.push_back({ ButtonId::Quit, L"終了", true, false, ButtonGroup::Bottom });
 
             const std::vector<ButtonRect> buttonRects = LayoutButtonColumn(buttonSpecs, layout, height);
+
+            // カジュアル対局の強さ選択(11.6節)。盤中央に3個の範囲タブと、現在のタブに応じた
+            // 段級位ボタンのグリッド(20〜11級・10〜1級は10個、1〜9段は9個)を表示する
+            std::vector<ButtonSpec> casualTabSpecs;
+            std::vector<ButtonSpec> casualSlotSpecs;
+            if (turnState == TurnState::ChoosingCasualStrength)
+            {
+                static const wchar_t* kTabLabels[3] = { L"20〜11級", L"10〜1級", L"1〜9段" };
+                for (int group = 0; group < 3; ++group)
+                {
+                    casualTabSpecs.push_back({ CasualTabButtonId(group), kTabLabels[group],
+                        true, casualStrengthGroup == group });
+                }
+
+                const int slotCount = (casualStrengthGroup == 2) ? 9 : 10;
+                for (int slot = 0; slot < slotCount; ++slot)
+                {
+                    const int rankIndex = RankIndexForCasualSlot(casualStrengthGroup, slot);
+                    casualSlotSpecs.push_back({ CasualSlotButtonId(slot),
+                        DisplayRankTextForRankIndex(rankIndex), true, false });
+                }
+            }
+            const std::vector<ButtonRect> casualTabRects = LayoutCasualGroupTabs(casualTabSpecs, layout);
+            const std::vector<ButtonRect> casualSlotRects = LayoutCasualRankGrid(casualSlotSpecs, layout);
+            const ButtonStyle casualTabStyle{
+                kCasualTabFontSize, kCasualTabButtonHeight * 0.5f,
+                kCasualTabColorR, kCasualTabColorG, kCasualTabColorB,
+                kCasualTabHoverColorR, kCasualTabHoverColorG, kCasualTabHoverColorB,
+                kCasualTabBorderColorR, kCasualTabBorderColorG, kCasualTabBorderColorB
+            };
+            const ButtonStyle casualGridStyle{ kCasualGridFontSize, kCasualGridCornerRadius };
+
+            if (mouseInWindow && clicked && turnState == TurnState::ChoosingCasualStrength)
+            {
+                for (const ButtonRect& button : casualTabRects)
+                {
+                    if (button.Enabled && IsPointInButton(button, mouseWorldX, mouseWorldY))
+                    {
+                        if (button.Id == ButtonId::CasualGroupKyu20To11)      casualStrengthGroup = 0;
+                        else if (button.Id == ButtonId::CasualGroupKyu10To1) casualStrengthGroup = 1;
+                        else if (button.Id == ButtonId::CasualGroupDan1To9) casualStrengthGroup = 2;
+                        break;
+                    }
+                }
+                for (size_t i = 0; i < casualSlotRects.size(); ++i)
+                {
+                    const ButtonRect& button = casualSlotRects[i];
+                    if (button.Enabled && IsPointInButton(button, mouseWorldX, mouseWorldY))
+                    {
+                        const int rankIndex = RankIndexForCasualSlot(casualStrengthGroup, static_cast<int>(i));
+                        beginGameWithTargetRating(RatingForRankIndex(static_cast<double>(rankIndex)));
+                        break;
+                    }
+                }
+            }
 
             if (mouseInWindow && clicked)
             {
@@ -1766,22 +2072,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         break;
                     case ButtonId::ChooseCasual:
                         currentGameMode = GameMode::Casual;
+                        // 現在のレーティングが属する範囲のタブを既定選択にする(11.6節)
+                        casualStrengthGroup = CasualGroupForRating(CurrentUserRating().Rating);
                         turnState = TurnState::ChoosingCasualStrength;
-                        break;
-                    case ButtonId::StrengthMuchWeaker:
-                        beginGameWithTargetRating(CurrentUserRating().Rating + kCasualStrengthOffsets[0]);
-                        break;
-                    case ButtonId::StrengthWeaker:
-                        beginGameWithTargetRating(CurrentUserRating().Rating + kCasualStrengthOffsets[1]);
-                        break;
-                    case ButtonId::StrengthRecommended:
-                        beginGameWithTargetRating(CurrentUserRating().Rating + kCasualStrengthOffsets[2]);
-                        break;
-                    case ButtonId::StrengthStronger:
-                        beginGameWithTargetRating(CurrentUserRating().Rating + kCasualStrengthOffsets[3]);
-                        break;
-                    case ButtonId::StrengthMuchStronger:
-                        beginGameWithTargetRating(CurrentUserRating().Rating + kCasualStrengthOffsets[4]);
                         break;
                     case ButtonId::ShowMistakeStats:
                         statsReturnState = turnState;
@@ -2213,6 +2506,22 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 const bool isButtonHovered = mouseInWindow && IsPointInButton(buttonRects[i], mouseWorldX, mouseWorldY);
                 const bool isButtonPressed = isButtonHovered && isMouseDown;
                 DrawButton(renderer, buttonRects[i], buttonSpecs[i].Label, isButtonHovered, isButtonPressed);
+            }
+
+            // カジュアル対局の強さ選択(11.6節)。盤中央のタブ+グリッドを描画する
+            for (size_t i = 0; i < casualTabRects.size(); ++i)
+            {
+                const bool isButtonHovered = mouseInWindow && IsPointInButton(casualTabRects[i], mouseWorldX, mouseWorldY);
+                const bool isButtonPressed = isButtonHovered && isMouseDown;
+                DrawButton(renderer, casualTabRects[i], casualTabSpecs[i].Label, isButtonHovered, isButtonPressed,
+                    casualTabStyle);
+            }
+            for (size_t i = 0; i < casualSlotRects.size(); ++i)
+            {
+                const bool isButtonHovered = mouseInWindow && IsPointInButton(casualSlotRects[i], mouseWorldX, mouseWorldY);
+                const bool isButtonPressed = isButtonHovered && isMouseDown;
+                DrawButton(renderer, casualSlotRects[i], casualSlotSpecs[i].Label, isButtonHovered, isButtonPressed,
+                    casualGridStyle);
             }
 
             // 手番中、カーソルが空点の交点上にあれば半透明のプレビューを表示する

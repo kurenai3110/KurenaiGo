@@ -5,17 +5,20 @@
 
 namespace KurenaiGo
 {
+    // ユーザーの初期レーティング。段級位換算(Main.cppのRankIndexForRating、
+    // rating = index^3 / 27、1段=1000)における30級(最弱到達点、index0)に相当する
+    // 0を初期値とする。実世界の段級位・棋力を保証する値ではなく、あくまで換算上の起点。
+    // 初期レーティング決定(プレースメント)モードのElo逆算(InvertEloForRating)の
+    // 基準アンカー値としても使うが、このモードは現在kPlacementModeEnabled(Main.cpp)で
+    // 無効化している
+    constexpr double kInitialRating = 0.0;
+
     // 対局終了時点でのレーティング(棋力の数値化)。rating_history.txtの全行から復元する
     struct RatingData
     {
-        double Rating = 1500.0;
+        double Rating = kInitialRating;
         int GamesPlayed = 0;
     };
-
-    // ユーザーの初期レーティング。標準的なElo初期値の慣習を流用した値であり、
-    // 実世界の段級位・棋力を表す値ではない。初期レーティング決定(プレースメント)モードの
-    // Elo逆算(InvertEloForRating)の基準アンカー値としても使う
-    constexpr double kInitialRating = 1500.0;
 
     // Eloレーティングで広く使われるK係数
     constexpr double kEloK = 32.0;

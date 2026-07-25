@@ -87,6 +87,7 @@ namespace KurenaiGo
     }
 
     void KataGoClient::LaunchProcess(const std::filesystem::path& exePath, const std::filesystem::path& modelPath,
+        const std::filesystem::path& humanModelPath, const std::string& humanSLProfile,
         const std::filesystem::path& configPath, const std::filesystem::path& stderrLogPath, int maxVisits)
     {
         SECURITY_ATTRIBUTES securityAttributes{};
@@ -128,9 +129,25 @@ namespace KurenaiGo
             throw std::runtime_error("KataGoのログファイル作成に失敗しました: " + stderrLogPath.string());
         }
 
-        std::wstring commandLine = L"\"" + exePath.wstring() + L"\" gtp -model \"" + modelPath.wstring() +
-            L"\" -config \"" + configPath.wstring() + L"\"" +
-            L" -override-config maxVisits=" + std::to_wstring(maxVisits);
+        std::wstring commandLine = L"\"" + exePath.wstring() + L"\" gtp -model \"" + modelPath.wstring() + L"\"";
+
+        // humanSLProfileが非空の場合のみHuman SLモデル(11.6節)を追加起動する。ASCII文字のみの
+        // 前提(profileSuffixは"rank_15k"のような英数字・アンダースコアのみの文字列)のため、
+        // 文字単位でそのままwstringへ広げてよい
+        std::string overrideConfig = "maxVisits=" + std::to_string(maxVisits);
+        if (!humanSLProfile.empty())
+        {
+            commandLine += L" -human-model \"" + humanModelPath.wstring() + L"\"";
+            overrideConfig += ",humanSLProfile=" + humanSLProfile +
+                ",humanSLChosenMoveProp=1.0,humanSLChosenMoveIgnorePass=true,"
+                "humanSLChosenMovePiklLambda=100000000,useLcbForSelection=false,"
+                "rootNumSymmetriesToSample=2,chosenMoveTemperatureEarly=0.85,"
+                "chosenMoveTemperature=0.70,chosenMoveTemperatureHalflife=80,"
+                "chosenMoveTemperatureOnlyBelowProb=0.01";
+        }
+        commandLine += L" -config \"" + configPath.wstring() + L"\" -override-config " +
+            std::wstring(overrideConfig.begin(), overrideConfig.end());
+
         std::vector<wchar_t> commandLineBuffer(commandLine.begin(), commandLine.end());
         commandLineBuffer.push_back(L'\0');
 
@@ -255,6 +272,7 @@ namespace KurenaiGo
     }
 
     void KataGoClient::StartAsync(const std::filesystem::path& exePath, const std::filesystem::path& modelPath,
+        const std::filesystem::path& humanModelPath, const std::string& humanSLProfile,
         const std::filesystem::path& configPath, const std::filesystem::path& stderrLogPath,
         int boardSize, int maxVisits)
     {
@@ -272,11 +290,12 @@ namespace KurenaiGo
         m_FinalScoreReady.store(false);
         m_AnalysisReady.store(false);
 
-        m_WorkerThread = std::thread([this, exePath, modelPath, configPath, stderrLogPath, boardSize, maxVisits]()
+        m_WorkerThread = std::thread([this, exePath, modelPath, humanModelPath, humanSLProfile,
+            configPath, stderrLogPath, boardSize, maxVisits]()
         {
             try
             {
-                LaunchProcess(exePath, modelPath, configPath, stderrLogPath, maxVisits);
+                LaunchProcess(exePath, modelPath, humanModelPath, humanSLProfile, configPath, stderrLogPath, maxVisits);
                 Exchange("boardsize " + std::to_string(boardSize));
                 Exchange("clear_board");
                 Exchange("komi " + std::to_string(kKomi));

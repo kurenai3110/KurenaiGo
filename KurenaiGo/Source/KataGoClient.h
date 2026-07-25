@@ -70,9 +70,14 @@ namespace KurenaiGo
         // maxVisitsはgtp.cfgのmaxVisitsを-override-configでこの値に上書きする
         // (実機検証済み: genmoveの探索がこの値でおおむね頭打ちになることを確認済み。
         // kata-analyzeの表示用解析はこの値に縛られない場合がある、docs/KurenaiGo.html参照)。
+        // humanSLProfileが非空の場合(例: "rank_15k")、humanModelPathを"-human-model"として
+        // 追加起動し、Human SLモデル(11.6節)による人間らしい打ち筋を再現する。空文字列の場合は
+        // humanModelPathを無視し、maxVisitsのみによる従来方式で起動する(Human SLモデル未配置時の
+        // フォールバック)。
         // すでに起動中のプロセスがある状態で呼んだ場合は、それを終了させてから作り直す
         // (対局ごとに強さを変えるため、同一インスタンスを再起動できるようにしている)
         void StartAsync(const std::filesystem::path& exePath, const std::filesystem::path& modelPath,
+            const std::filesystem::path& humanModelPath, const std::string& humanSLProfile,
             const std::filesystem::path& configPath, const std::filesystem::path& stderrLogPath,
             int boardSize, int maxVisits);
         bool IsStartupComplete() const { return m_StartupComplete.load(); }
@@ -104,6 +109,7 @@ namespace KurenaiGo
 
     private:
         void LaunchProcess(const std::filesystem::path& exePath, const std::filesystem::path& modelPath,
+            const std::filesystem::path& humanModelPath, const std::string& humanSLProfile,
             const std::filesystem::path& configPath, const std::filesystem::path& stderrLogPath, int maxVisits);
         // デストラクタとStartAsync(再起動時)の両方から呼ぶプロセス終了処理
         void ShutdownProcessIfRunning();
