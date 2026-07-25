@@ -19,8 +19,10 @@
 # graphify生成物(ナレッジグラフ出力・キャッシュ)
 /graphify-out/
 
-# Claude Codeのローカル状態
+# Claude Codeのローカル状態・Claude専用ファイル(プロジェクトルール参照)
 /.claude/
+/CLAUDE.md
+/WinAutomation.ps1
 
 # KataGo本体・ニューラルネットはBuild\Bin\<Platform>\<Config>\KataGo\に配置する
 # (容量が大きいためGit管理対象外。READMEの手順で別途取得する)。/Build/で既に除外済み
