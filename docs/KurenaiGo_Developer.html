@@ -425,7 +425,7 @@ GTPの座標は列がA〜T(<code>I</code>を除く)、行が盤の下端から1�
 </p>
 <h3>8.1 kata-analyzeのプロトコル(実機で検証)</h3>
 <p>
-<code>kata-analyze &lt;B|W&gt; interval 50 ownership true</code>を送ると、GTPの即時応答
+<code>kata-analyze &lt;B|W&gt; interval N ownership true</code>を送ると、GTPの即時応答
 (<code>= </code>)は返らず、代わりに<code>info move &lt;頂点&gt; visits N ... winrate W ...
 scoreLead S ... order K ... pv ... [次のinfo move...] ownership &lt;361個の浮動小数&gt;</code>
 という1行の報告が定期的に再送され続けます(差分ではなく毎回全体を送り直す)。
@@ -439,13 +439,31 @@ scoreLead S ... order K ... pv ... [次のinfo move...] ownership &lt;361個の�
 </p>
 <div class="note">
 <p>
+<strong>実機計測: <code>interval</code>引数の単位はミリ秒ではなくセンチ秒(1/100秒)</strong>。
+katago.exeへ直接GTPコマンドを送って計測したところ、<code>interval 50</code>を指定すると
+最初の<code>info</code>報告が届くまで約557ms、<code>interval 100</code>では約1004ms、
+<code>interval 10</code>では約104ms、<code>interval 5</code>では約54msかかりました
+(指定値のちょうど10倍)。以前は50をミリ秒のつもりで指定していましたが、実際には500ms相当を
+指定していたことになります。<code>ExchangeAnalyze</code>のループは
+<code>sawReport</code>(最初の報告を受け取ったか)が立つまで<code>budget.TargetMs</code>等の
+打ち切り判定に入らないため、このズレにより<strong>どの局面も探索の速さに関わらず最低500ms
+待たされていました</strong>(1局面あたりの探索自体は数十〜100ms程度でtargetVisitsに到達して
+いたにもかかわらず)。実機計測(19路・実対局60手)では、interval引数を2(=20ms相当)へ
+修正しただけで、一括解析(<code>kBatchAnalysisBudget</code>)の1局面あたり平均所要時間が
+521.6ms→156.3ms(約3.3倍)に改善しました。この修正はライブ解析(<code>kLiveAnalysisBudget</code>)
+にも同様に効きます。
+</p>
+</div>
+<div class="note">
+<p>
 <strong>解析の停止方法に関する既知の癖</strong>: kata-analyzeは一般的には空行を送ると
 停止しますが、このKataGoビルドでは「報告を受け取ってから短時間で空行による停止要求を送ると、
 その後の応答が返らなくなる(ハングする)」現象を実機で複数回確認しました。空行の代わりに
 通常のGTPコマンド(KurenaiGoでは<code>protocol_version</code>)を送ると解析はただちに中断され、
 そのコマンド自身の正常な応答が届きます。この方式は繰り返しの実機検証で安定して動作したため、
 <code>KataGoClient::ExchangeAnalyze</code>では停止に空行ではなく<code>protocol_version</code>を
-使っています。
+使っています。停止送信後この応答が届くまで(flush)の実測値は平均15〜20ms程度で、
+interval値によらずほぼ一定でした。
 </p>
 </div>
 <h3>8.2 解析タイミングと打ち切り</h3>

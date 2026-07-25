@@ -631,6 +631,13 @@ namespace KurenaiGo
         // 代わりに、通常のGTPコマンド(ここではprotocol_version)を送ると解析はただちに中断され、
         // そのコマンド自身の正常な応答が届く。この方式は複数回の実機検証で安定して動作したため、
         // 停止には空行ではなく実コマンドを使う。詳細な検証結果はdocs/KurenaiGo_Developer.htmlを参照
+        //
+        // interval引数の単位はミリ秒ではなくセンチ秒(1/100秒)。実機計測で確認済み
+        // (interval 50を指定すると最初の報告が約500ms後に届く。詳細はdocs/KurenaiGo_Developer.html
+        // 8.2節参照)。以前はミリ秒のつもりで50を指定しており、下のループはsawReportが立つまで
+        // budget.TargetMs等の打ち切り判定に入らないため、実質どの局面も最低500ms待たされていた。
+        // 探索自体はもっと速く目標visits数に到達しているため、報告間隔を2(=20ms)まで縮めて
+        // 打ち切り判定のポーリング粒度を budget.TargetMs/TargetVisits に対して十分細かくする
 
         KataGoAnalysisResult result;
         result.ColorToMove = colorToMove;
@@ -640,7 +647,7 @@ namespace KurenaiGo
         std::lock_guard<std::mutex> lock(m_IoMutex);
 
         const std::string command = std::string("kata-analyze ") + ToGtpColorChar(colorToMove) +
-            " interval 50 ownership true";
+            " interval 2 ownership true";
         SendCommand(command);
 
         const DWORD startTick = GetTickCount();
