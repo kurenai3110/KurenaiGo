@@ -70,15 +70,26 @@ namespace
     // 19路盤の星(hoshi)の位置。0-indexed(0〜18)で、標準的な4線交点
     constexpr std::array<int, 3> kHoshiIndices = { 3, 9, 15 };
 
-    // 盤の下に確保する操作ボタン行の高さ。ComputeBoardLayoutはこの分を除いた領域に盤を配置する
-    constexpr float kButtonBarHeight = 64.0f;
+    // 画面右側に確保する操作ボタン列の幅。ComputeBoardLayoutはこの分を除いた領域(左側)に盤を配置する
+    constexpr float kButtonColumnWidth = 220.0f;
+    // ボタン列の上下端からの余白(上グループ・下グループの開始位置に使う)
+    constexpr float kButtonColumnMarginY = 24.0f;
+    // ボタン列の左右の余白(ボタンの実幅はkButtonColumnWidthからこれを差し引いた固定幅になる)
+    constexpr float kButtonColumnPaddingX = 16.0f;
+
     // 盤の上に確保する帯の高さ(棋譜再生中のみ、上段に着手の言語化コメント・下段に損失グラフを
     // 描画する。対局中は空のまま)
     constexpr float kGraphAreaHeight = 130.0f;
+    // 上部帯の背景パネル(ボタン列と同系統の配色にする)の見た目
+    constexpr float kTopPanelColorR = 0.16f, kTopPanelColorG = 0.16f, kTopPanelColorB = 0.19f;
+    constexpr float kTopPanelAlpha = 0.85f;
+    constexpr float kTopPanelBorderThickness = 1.5f;
+    constexpr float kTopPanelBorderColorR = 0.45f, kTopPanelBorderColorG = 0.45f, kTopPanelBorderColorB = 0.48f;
+    constexpr float kTopPanelCornerRadius = 10.0f;
 
-    constexpr uint32_t kWindowWidth = 900;
-    constexpr uint32_t kWindowHeight =
-        900 + static_cast<uint32_t>(kButtonBarHeight) + static_cast<uint32_t>(kGraphAreaHeight);
+    // ウィンドウは16:9に固定する
+    constexpr uint32_t kWindowWidth = 1600;
+    constexpr uint32_t kWindowHeight = 900;
 
     // 盤(木目)が画面短辺に対して占める割合。残りは外周の余白
     constexpr float kBoardExtentRatio = 0.88f;
@@ -149,11 +160,10 @@ namespace
     constexpr float kHudFontSize = 18.0f;
     constexpr float kHudColorR = 0.92f, kHudColorG = 0.92f, kHudColorB = 0.90f;
 
-    // 操作ボタン(パス・投了・地合い表示切替・着手ヒント表示切替・棋譜再生・終了)の見た目
+    // 操作ボタン(パス・投了・地合い表示切替・着手ヒント表示切替・棋譜再生・終了等)の見た目。
+    // 画面右側の縦列に、列幅いっぱいの固定幅で上から下へ積む
     constexpr float kButtonHeight = 40.0f;
-    constexpr float kButtonPaddingX = 14.0f;
-    constexpr float kButtonMinWidth = 88.0f;
-    constexpr float kButtonSpacing = 10.0f;
+    constexpr float kButtonSpacing = 10.0f; // ボタン間の縦の隙間
     constexpr float kButtonFontSize = 16.0f;
     // 通常時・ホバー時・トグルON時・無効時の背景色
     constexpr float kButtonColorR = 0.30f, kButtonColorG = 0.30f, kButtonColorB = 0.34f;
@@ -163,6 +173,21 @@ namespace
     // 通常時・無効時の文字色
     constexpr float kButtonTextColorR = 0.95f, kButtonTextColorG = 0.95f, kButtonTextColorB = 0.95f;
     constexpr float kButtonDisabledTextColorR = 0.5f, kButtonDisabledTextColorG = 0.5f, kButtonDisabledTextColorB = 0.5f;
+    // ボタンの角丸半径・ドロップシャドウ・枠線・押下状態の見た目(DrawRoundedRect使用)
+    constexpr float kButtonCornerRadius = 8.0f;
+    constexpr float kButtonShadowOffsetX = 2.0f;
+    constexpr float kButtonShadowOffsetY = -3.0f; // Y-up座標系のため下方向は負
+    constexpr float kButtonShadowColorR = 0.0f, kButtonShadowColorG = 0.0f, kButtonShadowColorB = 0.0f;
+    constexpr float kButtonShadowAlpha = 0.35f;
+    constexpr float kButtonBorderThickness = 1.5f;
+    constexpr float kButtonBorderColorR = 0.50f, kButtonBorderColorG = 0.50f, kButtonBorderColorB = 0.55f;
+    constexpr float kButtonBorderActiveColorR = 0.55f, kButtonBorderActiveColorG = 0.90f, kButtonBorderActiveColorB = 0.55f;
+    constexpr float kButtonPressedDarkenFactor = 0.75f; // マウス左ボタン押下中は本体色をこの倍率で暗くする
+    constexpr float kButtonPressedOffsetY = -2.0f; // 押下時に本体・文字を少し沈める(Y-up座標系のため負)
+    // 中央グループと「終了」ボタンの間の区切り線(誤クリック防止の視覚的な境界)
+    constexpr float kButtonSeparatorThickness = 1.0f;
+    constexpr float kButtonSeparatorMarginX = 12.0f; // 列の左右端からの余白
+    constexpr float kButtonSeparatorColorR = 0.45f, kButtonSeparatorColorG = 0.45f, kButtonSeparatorColorB = 0.48f;
 
     const wchar_t* kWindowTitle = L"KurenaiGo";
 
@@ -174,22 +199,26 @@ namespace
         float BoardExtent = 0.0f;
         float GridExtent = 0.0f;
         float LineSpacing = 0.0f;
+        // 盤を内包する左側の利用可能幅(ウィンドウ幅 - 右側のボタン列幅)。上部帯・HUD等、
+        // ボタン列の真上に重ならないよう配置したい要素の水平方向の基準に使う
+        float ContentWidth = 0.0f;
     };
 
     BoardLayout ComputeBoardLayout(uint32_t windowWidth, uint32_t windowHeight)
     {
-        // 盤の描画領域はウィンドウ下端の操作ボタン行(kButtonBarHeight)と上端の損失グラフの帯
-        // (kGraphAreaHeight)を除いた範囲とする
-        const float boardAreaHeight =
-            (std::max)(1.0f, static_cast<float>(windowHeight) - kButtonBarHeight - kGraphAreaHeight);
-        const float minDimension = (std::min)(static_cast<float>(windowWidth), boardAreaHeight);
+        // 盤の描画領域は、右端の操作ボタン列(kButtonColumnWidth)を除いた幅・上端の損失グラフの帯
+        // (kGraphAreaHeight)を除いた高さの範囲とする(下端はボタン行が無くなったため制約が無い)
+        const float contentWidth = (std::max)(1.0f, static_cast<float>(windowWidth) - kButtonColumnWidth);
+        const float boardAreaHeight = (std::max)(1.0f, static_cast<float>(windowHeight) - kGraphAreaHeight);
+        const float minDimension = (std::min)(contentWidth, boardAreaHeight);
 
         BoardLayout layout;
-        layout.CenterX = static_cast<float>(windowWidth) * 0.5f;
-        layout.CenterY = kButtonBarHeight + boardAreaHeight * 0.5f;
+        layout.CenterX = contentWidth * 0.5f;
+        layout.CenterY = boardAreaHeight * 0.5f;
         layout.BoardExtent = minDimension * kBoardExtentRatio;
         layout.GridExtent = layout.BoardExtent * kGridExtentRatio;
         layout.LineSpacing = layout.GridExtent / static_cast<float>(kBoardLines - 1);
+        layout.ContentWidth = contentWidth;
         return layout;
     }
 
@@ -767,13 +796,23 @@ namespace
         BackFromStats,
     };
 
-    // 1フレーム分のボタン行を組み立てる際の仕様(ラベル・有効/無効・トグルON状態)
+    // ボタン列(画面右側の縦列)内での配置グループ。対局状態(turnState)によって中央グループの
+    // 内容・個数が変わっても列全体の重心が安定するよう、役割ごとに配置基準を分ける
+    enum class ButtonGroup
+    {
+        Top,    // 常時表示・表示切替系(地合い表示・着手ヒント)。列の上端を起点に上詰め
+        Center, // 対局状態に応じた操作。列の垂直中央を基準に中央揃え
+        Bottom, // 終了。列の下端を起点に下詰め(頻繁に押す操作から離し誤クリックを防ぐ)
+    };
+
+    // 1フレーム分のボタン行を組み立てる際の仕様(ラベル・有効/無効・トグルON状態・配置グループ)
     struct ButtonSpec
     {
         ButtonId Id;
         std::wstring Label;
         bool Enabled = true;
         bool Active = false; // トグル系ボタンがON状態かどうか(背景色に反映)
+        ButtonGroup Group = ButtonGroup::Center;
     };
 
     // ButtonSpecから求めたヒット領域(中心x, y基準)
@@ -801,29 +840,60 @@ namespace
         return width;
     }
 
-    // ボタン仕様のリストを、盤の左端を起点に左詰めで1行に並べたヒット領域のリストへ変換する
-    std::vector<ButtonRect> LayoutButtonRow(const std::vector<ButtonSpec>& specs, const BoardLayout& layout)
+    // ボタン仕様のリストを、画面右側のボタン列内でグループ別(Top=上詰め/Center=中央揃え/
+    // Bottom=下詰め)に縦積みしたヒット領域のリストへ変換する。列幅いっぱいの固定幅ボタンにする
+    // (ラベル文字数に応じた可変幅は縦列だと不自然なため)
+    std::vector<ButtonRect> LayoutButtonColumn(const std::vector<ButtonSpec>& specs, const BoardLayout& layout,
+        uint32_t windowHeight)
     {
-        std::vector<ButtonRect> rects;
-        rects.reserve(specs.size());
+        std::vector<ButtonRect> rects(specs.size());
 
-        float cursorX = layout.CenterX - layout.GridExtent * 0.5f;
-        const float centerY = kButtonBarHeight * 0.5f;
+        const float columnCenterX = layout.ContentWidth + kButtonColumnWidth * 0.5f;
+        const float buttonWidth = kButtonColumnWidth - kButtonColumnPaddingX * 2.0f;
+
+        size_t centerCount = 0;
         for (const ButtonSpec& spec : specs)
         {
-            const float width = (std::max)(kButtonMinWidth, EstimateTextWidth(spec.Label, kButtonFontSize) + kButtonPaddingX * 2.0f);
+            if (spec.Group == ButtonGroup::Center)
+            {
+                ++centerCount;
+            }
+        }
+        const float centerTotalHeight = centerCount > 0
+            ? static_cast<float>(centerCount) * kButtonHeight + static_cast<float>(centerCount - 1) * kButtonSpacing
+            : 0.0f;
 
+        float topCursorY = static_cast<float>(windowHeight) - kButtonColumnMarginY - kButtonHeight * 0.5f;
+        float centerCursorY = static_cast<float>(windowHeight) * 0.5f + centerTotalHeight * 0.5f - kButtonHeight * 0.5f;
+        float bottomCursorY = kButtonColumnMarginY + kButtonHeight * 0.5f;
+
+        for (size_t i = 0; i < specs.size(); ++i)
+        {
+            const ButtonSpec& spec = specs[i];
             ButtonRect rect;
             rect.Id = spec.Id;
-            rect.Width = width;
+            rect.Width = buttonWidth;
             rect.Height = kButtonHeight;
-            rect.CenterX = cursorX + width * 0.5f;
-            rect.CenterY = centerY;
+            rect.CenterX = columnCenterX;
             rect.Enabled = spec.Enabled;
             rect.Active = spec.Active;
-            rects.push_back(rect);
 
-            cursorX += width + kButtonSpacing;
+            switch (spec.Group)
+            {
+            case ButtonGroup::Top:
+                rect.CenterY = topCursorY;
+                topCursorY -= (kButtonHeight + kButtonSpacing);
+                break;
+            case ButtonGroup::Center:
+                rect.CenterY = centerCursorY;
+                centerCursorY -= (kButtonHeight + kButtonSpacing);
+                break;
+            case ButtonGroup::Bottom:
+                rect.CenterY = bottomCursorY;
+                bottomCursorY += (kButtonHeight + kButtonSpacing);
+                break;
+            }
+            rects[i] = rect;
         }
         return rects;
     }
@@ -834,11 +904,13 @@ namespace
             worldY >= button.CenterY - button.Height * 0.5f && worldY <= button.CenterY + button.Height * 0.5f;
     }
 
-    // ボタン1個の背景と文字を描画する。ホバー/トグルON/無効状態に応じて背景色を変える
-    void DrawButton(KurenaiEngine2D& renderer, TextureHandle whiteTexture, const ButtonRect& button,
-        const std::wstring& label, bool isHovered)
+    // ボタン1個の背景と文字を描画する。ホバー/トグルON/無効/押下状態に応じて見た目を変える。
+    // 角丸矩形+内側枠線+ドロップシャドウはKurenaiEngine2D::DrawRoundedRectで1回の描画コールずつ描く
+    void DrawButton(KurenaiEngine2D& renderer, const ButtonRect& button,
+        const std::wstring& label, bool isHovered, bool isPressed)
     {
         float r = kButtonColorR, g = kButtonColorG, b = kButtonColorB;
+        float borderR = kButtonBorderColorR, borderG = kButtonBorderColorG, borderB = kButtonBorderColorB;
         if (!button.Enabled)
         {
             r = kButtonDisabledColorR; g = kButtonDisabledColorG; b = kButtonDisabledColorB;
@@ -846,17 +918,36 @@ namespace
         else if (button.Active)
         {
             r = kButtonActiveColorR; g = kButtonActiveColorG; b = kButtonActiveColorB;
+            borderR = kButtonBorderActiveColorR; borderG = kButtonBorderActiveColorG; borderB = kButtonBorderActiveColorB;
         }
         else if (isHovered)
         {
             r = kButtonHoverColorR; g = kButtonHoverColorG; b = kButtonHoverColorB;
         }
 
-        renderer.DrawSprite(button.CenterX, button.CenterY, button.Width, button.Height, 0.0f, whiteTexture, r, g, b, 1.0f);
+        float centerX = button.CenterX;
+        float centerY = button.CenterY;
+        if (button.Enabled && isPressed)
+        {
+            r *= kButtonPressedDarkenFactor; g *= kButtonPressedDarkenFactor; b *= kButtonPressedDarkenFactor;
+            centerY += kButtonPressedOffsetY;
+        }
+
+        // ドロップシャドウ
+        renderer.DrawRoundedRect(
+            button.CenterX + kButtonShadowOffsetX, button.CenterY + kButtonShadowOffsetY,
+            button.Width, button.Height, kButtonCornerRadius,
+            kButtonShadowColorR, kButtonShadowColorG, kButtonShadowColorB, kButtonShadowAlpha);
+
+        // 本体+内側枠線
+        renderer.DrawRoundedRect(
+            centerX, centerY, button.Width, button.Height, kButtonCornerRadius,
+            r, g, b, 1.0f,
+            kButtonBorderThickness, borderR, borderG, borderB, 1.0f);
 
         const float textWidth = EstimateTextWidth(label, kButtonFontSize);
-        const float textX = button.CenterX - textWidth * 0.5f;
-        const float textY = button.CenterY - kButtonFontSize * 0.5f;
+        const float textX = centerX - textWidth * 0.5f;
+        const float textY = centerY - kButtonFontSize * 0.5f;
         if (button.Enabled)
         {
             renderer.DrawText(textX, textY, label, kButtonFontSize, kButtonTextColorR, kButtonTextColorG, kButtonTextColorB, 1.0f);
@@ -1457,8 +1548,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             }
             else
             {
-                buttonSpecs.push_back({ ButtonId::ToggleTerritory, L"地合い表示", true, territoryOverlayEnabled });
-                buttonSpecs.push_back({ ButtonId::ToggleHint, L"着手ヒント", true, hintOverlayEnabled });
+                buttonSpecs.push_back({ ButtonId::ToggleTerritory, L"地合い表示", true, territoryOverlayEnabled, ButtonGroup::Top });
+                buttonSpecs.push_back({ ButtonId::ToggleHint, L"着手ヒント", true, hintOverlayEnabled, ButtonGroup::Top });
                 if (turnState == TurnState::HumanToMove)
                 {
                     buttonSpecs.push_back({ ButtonId::Pass, L"パス", true, false });
@@ -1485,9 +1576,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     buttonSpecs.push_back({ ButtonId::ShowMistakeStats, L"苦手分野", true, false });
                 }
             }
-            buttonSpecs.push_back({ ButtonId::Quit, L"終了", true, false });
+            buttonSpecs.push_back({ ButtonId::Quit, L"終了", true, false, ButtonGroup::Bottom });
 
-            const std::vector<ButtonRect> buttonRects = LayoutButtonRow(buttonSpecs, layout);
+            const std::vector<ButtonRect> buttonRects = LayoutButtonColumn(buttonSpecs, layout, height);
 
             if (mouseInWindow && clicked)
             {
@@ -1892,7 +1983,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             renderer.BeginFrame(kClearColorR, kClearColorG, kClearColorB);
             if (turnState == TurnState::ViewingMistakeStats)
             {
-                DrawMistakeStatsScreen(renderer, width, height, mistakeStats);
+                // ボタン列の真上には表示しないよう、盤を内包する左側の利用可能幅を基準にする
+                DrawMistakeStatsScreen(renderer, static_cast<uint32_t>(layout.ContentWidth), height, mistakeStats);
             }
             else
             {
@@ -1917,10 +2009,19 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 }
                 if (turnState == TurnState::Reviewing)
                 {
+                    // 上部帯全体(盤を内包する幅、ボタン列の真上は含めない)を覆う背景パネルを、
+                    // 言語化コメント・損失グラフより先に描画してボタン列と統一感のある配色にする
+                    renderer.DrawRoundedRect(
+                        layout.ContentWidth * 0.5f, static_cast<float>(height) - kGraphAreaHeight * 0.5f,
+                        layout.ContentWidth, kGraphAreaHeight, kTopPanelCornerRadius,
+                        kTopPanelColorR, kTopPanelColorG, kTopPanelColorB, kTopPanelAlpha,
+                        kTopPanelBorderThickness, kTopPanelBorderColorR, kTopPanelBorderColorG, kTopPanelBorderColorB, 1.0f);
+
                     const std::wstring commentary = BuildMoveCommentary(reviewRecord, reviewMoveIndex,
                         reviewWinrateCache, reviewBestMoveRowCache, reviewBestMoveColCache, reviewHasCached);
                     DrawMoveCommentary(renderer, height, commentary);
-                    DrawLossGraph(renderer, width, height, reviewWinrateCache, reviewHasCached, reviewMoveIndex);
+                    DrawLossGraph(renderer, static_cast<uint32_t>(layout.ContentWidth), height,
+                        reviewWinrateCache, reviewHasCached, reviewMoveIndex);
                 }
                 DrawHud(renderer, layout, turnState, displayBoard,
                     reviewMoveIndex, static_cast<int>(reviewRecord.Moves.size()), reviewRecord.Result,
@@ -1930,11 +2031,23 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     static_cast<int>(postGameAnalysisMoves.size()));
             }
 
-            // 着手以外の操作ボタンを盤下のボタン行に描画する
+            // 中央グループと「終了」ボタン(下グループ)の間に区切り線を描き、誤クリックしやすい
+            // 「終了」の手前を視覚的に区切る
+            {
+                const float separatorY = kButtonColumnMarginY + kButtonHeight + kButtonSpacing * 0.5f;
+                const float separatorLeftX = layout.ContentWidth + kButtonSeparatorMarginX;
+                const float separatorRightX = layout.ContentWidth + kButtonColumnWidth - kButtonSeparatorMarginX;
+                renderer.DrawLine(separatorLeftX, separatorY, separatorRightX, separatorY, kButtonSeparatorThickness,
+                    kButtonSeparatorColorR, kButtonSeparatorColorG, kButtonSeparatorColorB, 1.0f);
+            }
+
+            // 着手以外の操作ボタンを右側のボタン列に描画する
+            const bool isMouseDown = renderer.IsMouseButtonDown(MouseButton::Left);
             for (size_t i = 0; i < buttonRects.size(); ++i)
             {
                 const bool isButtonHovered = mouseInWindow && IsPointInButton(buttonRects[i], mouseWorldX, mouseWorldY);
-                DrawButton(renderer, whiteTexture, buttonRects[i], buttonSpecs[i].Label, isButtonHovered);
+                const bool isButtonPressed = isButtonHovered && isMouseDown;
+                DrawButton(renderer, buttonRects[i], buttonSpecs[i].Label, isButtonHovered, isButtonPressed);
             }
 
             // 手番中、カーソルが空点の交点上にあれば半透明のプレビューを表示する
