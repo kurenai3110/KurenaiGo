@@ -375,7 +375,7 @@ namespace
 
     // kata-analyzeのownership配列(row-major、盤面左上=index0)における(row, col)のインデックスを
     // 求める。KurenaiGoの内部座標はrow=0が盤面下端・col=0が左端(GTPと同じ)なので変換が必要。
-    // 実機での検証結果(黒石をA19に置いてindex0付近が反応することを確認)はdocs/KurenaiGo.html参照
+    // 実機での検証結果(黒石をA19に置いてindex0付近が反応することを確認)はdocs/KurenaiGo_Developer.html参照
     int OwnershipIndex(int row, int col, int boardSize)
     {
         const int rowFromTop = (boardSize - 1) - row;

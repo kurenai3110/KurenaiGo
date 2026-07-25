@@ -31,7 +31,7 @@ namespace KurenaiGo
         }
 
         // KurenaiGoの内部座標(row=0が盤面下端)をSGFの座標表記(列→行の順、行は盤面上端が0)へ
-        // 変換する。kata-analyzeのownership配列で使った変換則(docs/KurenaiGo.html 8.1節)と同じ
+        // 変換する。kata-analyzeのownership配列で使った変換則(docs/KurenaiGo_Developer.html 8.1節)と同じ
         std::string ToSgfPoint(int row, int col, int boardSize)
         {
             const int sgfRow = (boardSize - 1) - row;
@@ -86,7 +86,7 @@ namespace KurenaiGo
     SgfGameRecord ReadSgf(const std::string& sgfText)
     {
         // 本実装は分岐(variation)の無い単一手順のみを扱う最小限のSGFパーサ。
-        // 自分自身が書き出したSGFを読み戻せることを目的とする(docs/KurenaiGo.html参照)
+        // 自分自身が書き出したSGFを読み戻せることを目的とする(docs/KurenaiGo_Developer.html参照)
         SgfGameRecord record;
 
         size_t pos = sgfText.find('(');

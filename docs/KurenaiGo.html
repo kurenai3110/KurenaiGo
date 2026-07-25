@@ -116,1053 +116,271 @@
 <header class="page-header">
   <h1>KurenaiGo ドキュメント</h1>
   <p>
-    KurenaiGoは、<a href="https://github.com/kurenai3110/KurenaiEngine">KurenaiEngine</a>
-    (<code>KurenaiEngine2D</code>)で描画し、<a href="https://github.com/lightvector/katago">KataGo</a>
-    をGTP経由の対局相手として使う囲碁(Go)アプリです。このドキュメントでは、アプリ本体
-    (<code>KurenaiGo/Source/</code>以下)の実装内容を説明します。KurenaiEngine自体のAPIリファレンスは
-    <a href="../KurenaiEngine/docs/KurenaiEngine.html">KurenaiEngine/docs/KurenaiEngine.html</a>
-    を参照してください。
+    KurenaiGoは、自作の描画エンジン<a href="https://github.com/kurenai3110/KurenaiEngine">KurenaiEngine</a>
+    (DirectX 11)で盤・石を描画し、囲碁AI<a href="https://github.com/lightvector/katago">KataGo</a>と
+    GTP(Go Text Protocol)経由で通信して対局する囲碁(Go)アプリです。このドキュメントでは、
+    遊び方・機能・セットアップ方法を説明します。実装の詳細(座標系・描画方式・KataGo連携の内部仕様など)は
+    <a href="KurenaiGo_Developer.html">実装ドキュメント(docs/KurenaiGo_Developer.html)</a>を参照してください。
   </p>
 </header>
 
 <nav class="toc">
   <div class="toc-title">目次</div>
   <ol>
-    <li><a href="#status">1. 現在の実装範囲</a></li>
-    <li><a href="#coordinate">2. 座標系とレイアウト</a></li>
-    <li><a href="#rendering">3. 盤・石の描画</a></li>
-    <li><a href="#rules">4. ルールエンジン(GoBoard)</a></li>
-    <li><a href="#input">5. マウス入力</a></li>
-    <li><a href="#flow">6. 対局の進行(状態遷移)</a></li>
-    <li><a href="#katago">7. KataGo連携(KataGoClient)</a></li>
-    <li><a href="#analysis">8. 解析結果の可視化(勝率・地合い・着手ヒント)</a></li>
-    <li><a href="#sgf">9. 棋譜の保存・再生(SGF)</a></li>
-    <li><a href="#rating">10. 棋力の数値化(レーティング)</a></li>
-    <li><a href="#strength">11. 棋力に応じたAIの強さ設定</a></li>
-    <li><a href="#mistakes">12. 苦手分野の解析</a></li>
-    <li><a href="#future">13. 今後の課題</a></li>
+    <li><a href="#overview">1. KurenaiGoとは</a></li>
+    <li><a href="#setup">2. 動作環境とセットアップ</a></li>
+    <li><a href="#start">3. 対局を始める</a></li>
+    <li><a href="#controls">4. 基本操作</a></li>
+    <li><a href="#analysis">5. 勝率・地合い・着手ヒント</a></li>
+    <li><a href="#sgf">6. 棋譜の保存と再生</a></li>
+    <li><a href="#rating">7. レーティング(棋力の数値化)</a></li>
+    <li><a href="#strength">8. AIの強さ設定</a></li>
+    <li><a href="#mistakes">9. 苦手分野の解析</a></li>
+    <li><a href="#future">10. 未実装の機能</a></li>
   </ol>
 </nav>
 
 <main>
 
-<section id="status">
-<h2>1. 現在の実装範囲<span class="badge">KataGoとの対局・解析表示が可能</span></h2>
+<section id="overview">
+<h2>1. KurenaiGoとは<span class="badge">KataGoとの対局・解析表示が可能</span></h2>
 <p>
-盤の大きさの選択(9路/13路/19路、10.5節参照)、マウスでの着手、合法手判定・捕獲・シンプルコウを
-含むルール、そして<a href="https://github.com/lightvector/katago">KataGo</a>をGTP(Go Text
-Protocol)経由の子プロセスとして起動しての対局(人間=黒、KataGo=白)までを実装しています。あわせて、
-<code>kata-analyze</code>による局面解析を使った勝率表示・地合い可視化・着手ヒント(8章)、
-棋譜(SGF)の自動保存・再生・再生中の解析表示と損失グラフ(9章)、レート戦/カジュアルの
-対局モード分けと棋力の数値化(レーティング、盤の大きさごとに別々に記録、10章)、レーティングに
-応じたAIの強さの自動調整(11章)、レート戦終了時の自動解析による苦手分野の解析(局面ごとの
-悪手率、12章)も実装済みです。色の選択・ハンディキャップは未実装です(13章参照)。
+盤の大きさ(9路/13路/19路)を選んで、KataGoを相手にマウスで対局できる囲碁アプリです。合法手判定・
+アゲハマ(捕獲した石の数)・コウのルールをアプリ側で処理し、地の計算(終局のスコアリング)は
+KataGoに委ねています。対局中はKataGoの局面解析による勝率表示・地合い可視化・着手ヒントを
+確認でき、対局終了後は棋譜(SGF)の自動保存・再生、勝率の推移(損失グラフ)や着手の評価コメントの
+表示もできます。
+</p>
+<p>
+自分の棋力を数値化する「レーティング」と、それに応じてAIの強さを自動調整する「レート戦」、
+自分で段級位(20級〜9段)を選んで対局する「カジュアル」の2つの対局モードがあり、レート戦終了時には
+序盤・中盤・終盤ごとの悪手率を自動集計する「苦手分野の解析」も行われます。人間は常に黒番、色の選択や
+ハンディキャップ対局には対応していません(10章参照)。
 </p>
 </section>
 
-<section id="coordinate">
-<h2>2. 座標系とレイアウト</h2>
+<section id="setup">
+<h2>2. 動作環境とセットアップ</h2>
 <p>
-<code>KurenaiEngine2D</code>のワールド座標はウィンドウのピクセル座標そのもので、原点は画面左下、
-Y-upです(<code>DrawSprite</code>の<code>x, y</code>はスプライト中心)。KurenaiGoではウィンドウの
-リサイズに追従できるよう、毎フレーム <code>renderer.GetWidth()</code>/<code>GetHeight()</code> から
-盤のレイアウトを再計算しています(<code>ComputeBoardLayout</code>)。盤の目の数(<code>boardSize</code>、
-9/13/19のいずれか、10.5節参照)も引数として渡し、<code>LineSpacing</code>の分母に使うことで、
-盤の一辺の物理サイズは変えずに目の間隔だけを盤の大きさに応じて変えています。
+KurenaiGoを遊ぶには、KataGo本体・ニューラルネットワーク・「Human SLモデル」(8章参照)を
+別途用意して配置する必要があります(容量が大きいためアプリには同梱されていません)。ビルド・配置の
+詳しい手順はリポジトリの<a href="../README.md">README.md</a>(「セットアップ手順」の章)を
+参照してください。ここでは遊ぶ上で知っておくべき要点のみをまとめます。
 </p>
-<pre><code>struct BoardLayout
-{
-    float CenterX;      // 盤の中心(ウィンドウ中心)
-    float CenterY;
-    float BoardExtent;  // 木目の盤面の一辺の長さ
-    float GridExtent;   // 格子線が占める範囲の一辺の長さ(盤面より内側)
-    float LineSpacing;  // 目の間隔 = GridExtent / (boardSize - 1)
-};</code></pre>
 <ul>
-<li><code>BoardExtent</code>はウィンドウの短辺 × <code>kBoardExtentRatio</code>(0.88)。
-常に正方形になるよう短辺基準で計算する。</li>
-<li><code>GridExtent</code>は<code>BoardExtent</code> × <code>kGridExtentRatio</code>(0.90)。
-盤面の外周に木目の縁が見えるよう、格子線の範囲を一回り小さくしている。</li>
-<li>格子線のインデックス(0〜boardSize-1)からワールド座標への変換は
-<code>GridIndexToCoordinate</code>が行う(中心から<code>GridExtent</code>の半分だけ引いた位置を
-起点に、<code>LineSpacing</code>刻みで並べる)。</li>
+<li>動作環境はWindows 10/11。KataGoの動作にはGPU(OpenCL対応)を推奨します。</li>
+<li>初回起動時、KataGoはGPU向けの自動チューニングを行うため起動に数十秒かかることがあります
+(2回目以降はキャッシュされるため高速になります)。</li>
+<li><strong>「Human SLモデル」(<code>b18c384nbt-humanv0.bin.gz</code>)が配置されていないと、
+対局そのものを開始できません。</strong>未配置の場合、起動直後の画面に配置を促すメッセージのみが
+表示され、盤の大きさ・対局モードの選択には進めません(8章参照)。</li>
 </ul>
 </section>
 
-<section id="rendering">
-<h2>3. 盤・石の描画</h2>
+<section id="start">
+<h2>3. 対局を始める</h2>
 <p>
-盤面(木目)は<code>CreateSolidColorTexture(255, 255, 255, 255)</code>で作成した白1色のテクスチャを
-木目色でティントした矩形スプライトで描画します。格子線・星・石はいずれも
-<code>KurenaiEngine2D::DrawLine</code>/<code>DrawCircle</code>で直接描画しており、円形テクスチャを
-事前生成する必要はありません(かつては<code>Tools/generate_stone_textures.ps1</code>で石の
-PNGを生成していましたが、<code>DrawCircle</code>の追加に伴い削除しました)。
+<code>KurenaiGo.exe</code>を起動すると、16:9(1600x900)のウィンドウが開きます。まず画面右側の
+ボタン列で盤の大きさ(<code>9路</code>/<code>13路</code>/<code>19路</code>)を選び、続けて対局モードを
+選びます。
 </p>
 <table>
-<thead><tr><th>要素</th><th>描画方法</th></tr></thead>
+<thead><tr><th>対局モード</th><th>内容</th></tr></thead>
 <tbody>
-<tr><td>盤面(木目)</td><td>1x1の白テクスチャを木目色でティントした正方形スプライト1枚</td></tr>
-<tr><td>格子線(縦横boardSize本ずつ)</td><td><code>DrawLine</code>で格子の端から端まで1本ずつ描画</td></tr>
-<tr><td>星(hoshi)</td><td>盤の大きさごとの標準的な交点(19路は4隅+辺+天元の9箇所、0-indexedで3,9,15の組み合わせ。
-9路・13路は4隅+天元の5箇所)に<code>DrawCircle</code>で小さな点を描画(<code>HoshiPointsForBoardSize</code>)</td></tr>
-<tr><td>石(黒・白)</td><td><code>GoBoard</code>の石がある交点に<code>DrawCircle</code>で塗り円を描画</td></tr>
+<tr><td>レート戦</td><td>今のあなたのレーティング(7章)と互角になるようKataGoの強さを自動調整して対局します。
+勝敗がレーティングに反映されます。</td></tr>
+<tr><td>カジュアル</td><td>盤の中央に表示されるタブ(<code>20〜11級</code>/<code>10〜1級</code>/
+<code>1〜9段</code>)とボタングリッドから、AIの強さを段級位で直接選べます。レーティングには影響しません。</td></tr>
 </tbody>
 </table>
 <p>
-人間の手番中、カーソルに最も近い空点交点には<code>DrawCircle</code>で半透明のプレビュー円を
-表示します。
+強さが決まった時点でKataGoを起動するため、対局開始までにKataGo起動待ちの時間が入ります(初回のみ
+自動チューニングでさらに時間がかかることがあります)。準備ができ次第、黒番(人間)から対局が始まります。
 </p>
-<h3>3.1 効果音</h3>
 <p>
-着手時(人間・KataGo双方)に<code>stone_place.wav</code>、対局終了(投了・両者パス後の
-final_score)に<code>game_end.wav</code>を<code>KurenaiEngineBase::PlaySound</code>で再生します。
-いずれも実際の録音ではなく、<code>Tools/generate_sound_effects.ps1</code>で正弦波を合成して
-生成した16bit PCMのWAVファイルです(<code>Assets/Sounds/</code>にコミット)。
+レーティングは<strong>盤の大きさごとに完全に独立して記録</strong>されます(9路・13路・19路では
+互角になる強さの基準がまったく異なるため)。例えば19路で対局を重ねてレーティングが上がっていても、
+9路を選んだ最初の対局は9路独自の初期レーティング(0、30級相当)から始まります。
 </p>
-</section>
-
-<section id="rules">
-<h2>4. ルールエンジン(<code>GoBoard</code>)</h2>
 <p>
-<code>KurenaiGo::GoBoard</code>(<code>Source/GoBoard.h/.cpp</code>)は盤面と囲碁のルールのみを
-扱う、描画・入力から独立したクラスです。座標は<code>row=0</code>が盤の下端・<code>col=0</code>が
-左端(<code>row*Size+col</code>の1次元配列)で、これは2章のワールド座標系(インデックス0が下/左)
-およびGTPの座標系(行1=下端、列A=左端)の両方と一致するため、変換が単純になります。
-</p>
-<h3>4.1 合法手判定と捕獲</h3>
-<p>
-<code>TryPlay(row, col, color)</code>は次の順序で処理します。
-</p>
-<ol>
-<li>空点でなければ非合法。シンプルコウで禁止されている地点なら非合法。</li>
-<li>石を仮に置き、隣接する相手グループをフラッドフィル(<code>CollectGroup</code>)で走査して
-呼吸点(liberty)を数える。呼吸点0のグループがあれば取り上げる(複数方向から同じグループに
-到達する場合の重複除去あり)。</li>
-<li>相手を取り上げた後、自分のグループの呼吸点を再計算する。0なら自殺手として非合法・
-全ての変更をロールバックする。</li>
-<li>合法なら確定し、連続パス数を0にリセットする。取り上げた石の数はその色のアゲハマ
-(<code>CapturesBy</code>)に加算する(自殺手としてロールバックする場合は加算しない)。</li>
-</ol>
-<h3>4.2 シンプルコウ</h3>
-<p>
-直前の手が「相手をちょうど1つ取り、打った石自身が呼吸点1つ(その取った地点)だけの単独石になる」
-形だった場合、その地点への即座の再着手を次の1手だけ禁止します(<code>m_KoForbiddenIndex</code>)。
-パスを含むいずれかの着手が行われるとこの制約は解除されます。より厳密な超劫(局面の反復)判定は
-行っておらず、一般的なアプリで広く使われる簡易版のコウ規則です。
-</p>
-<h3>4.3 地の計算をしない理由</h3>
-<p>
-<code>GoBoard</code>自体は地の計算(スコアリング)を行いません。生きた石・死んだ石の判定
-(セキ等の特殊な形を含む)を自前実装するのは複雑で誤りやすいため、対局終了(両者パス)時は
-KataGoの<code>final_score</code>(7章)にスコアリングを委譲しています。
+対局終了後(または棋譜再生中)はいつでも<code>新規対局</code>ボタン(<code>N</code>キー)で
+新しい対局を始められます。アプリを再起動する必要はなく、何度でも打ち直せます。選ぶと盤の大きさの
+選択画面に戻り、盤面・アゲハマ・着手履歴がすべてリセットされたうえで(盤の大きさ・対局モードを
+選び直した後)黒番(人間)から対局が始まります(強さを選び直すため、新規対局のたびにKataGoを
+起動し直します)。
 </p>
 </section>
 
-<section id="input">
-<h2>5. マウス・キーボード入力</h2>
+<section id="controls">
+<h2>4. 基本操作</h2>
 <p>
-<code>KurenaiEngineBase</code>が公開するウィンドウスコープの入力API(<code>IsMouseOverWindow</code>・
-<code>WasMouseButtonPressed</code>・<code>WasKeyPressed</code>・<code>GetClientMousePosition</code>)を
-使っています。これらはウィンドウメッセージ(<code>WM_MOUSEMOVE</code>/<code>WM_LBUTTONDOWN</code>/
-<code>WM_KEYDOWN</code>等)から状態を更新するため、<code>GetAsyncKeyState</code>/<code>GetCursorPos</code>と
-異なりウィンドウがフォーカスを失っていれば反応しません。かつて必要だった、自ウィンドウのHWNDを
-<code>FindWindowW(L"KurenaiEngineWindowClass", ...)</code>で検索する回避策も、<code>GetWindowHandle</code>を
-含むこれらのAPIが揃ったことで不要になりました。
-</p>
-<p>
-<code>GetClientMousePosition()</code>はWin32標準のクライアント座標(原点は左上、Y-down)を返すため、
-<code>height - clientY</code>でワールド座標(原点は左下、Y-up)に変換します。最も近い交点との距離が
-<code>LineSpacing</code>の40%以内であればその交点を「ホバー中」とみなします
-(<code>TryGetHoveredIntersection</code>)。クリック・パス・投了・地合い表示切替(<code>T</code>)・
-着手ヒント表示切替(<code>H</code>)は<code>WasMouseButtonPressed</code>/<code>WasKeyPressed</code>が
-すでに「直前の<code>PumpEvents()</code>呼び出し中に押された」立ち上がりエッジを返すため、
-KurenaiGo側で前フレームとの比較を自前実装する必要はありません。
-</p>
-<div class="note">
-<p>
-<strong>自動検証時の注意</strong>: <code>IsMouseOverWindow</code>は内部で<code>TrackMouseEvent</code>
-(<code>TME_LEAVE</code>)を使っており、これは実際のカーソル位置も見ています。<code>PostMessage</code>で
-<code>WM_MOUSEMOVE</code>を送ってウィンドウ内へカーソルがあるように見せかけても、実カーソルが
-ウィンドウ外にあると直後に<code>WM_MOUSELEAVE</code>が発生し<code>IsMouseOverWindow</code>が
-falseに戻ってしまう(ホバー判定だけが効かなくなる)ことを実機検証で確認しました。ホバー判定を
-含めてPostMessageで動作確認したい場合は、実カーソルも対象ウィンドウのクライアント領域内に
-置いた状態で行う必要があります。ボタン押下・キー入力自体(<code>WasMouseButtonPressed</code>/
-<code>WasKeyPressed</code>)はこの制約を受けず、実カーソル位置に関係なく<code>PostMessage</code>/
-<code>SendMessage</code>だけで正しく検証できます。
-</p>
-</div>
-</section>
-
-<section id="flow">
-<h2>6. 対局の進行(状態遷移)</h2>
-<p>
-<code>Main.cpp</code>の<code>TurnState</code>で対局の進行を管理します。
+着手(石を置く)は盤の交点をマウスでクリックします。手番中、カーソルに最も近い空点には半透明の
+プレビュー円が表示されます。着手以外の操作は、画面右側に常時表示されるボタン列から行えます。
+ボタンは役割ごとに3グループ(上: 地合い表示・着手ヒントなどの表示切替 / 中央: 対局状態に応じた
+操作 / 下: 終了)に分かれており、対局の進行状態に応じて中央グループの内容・個数が変わります
+(例: 棋譜再生ボタンは対局終了後にのみ表示)。<code>終了</code>は誤クリックを防ぐため他の操作から
+離して配置し、手前に区切り線を表示します。キーボードでも同じ操作が可能です。
 </p>
 <table>
-<thead><tr><th>状態</th><th>内容</th></tr></thead>
+<thead><tr><th>操作</th><th>ボタン</th><th>キー</th></tr></thead>
 <tbody>
-<tr><td><code>ChoosingBoardSize</code></td><td>盤の大きさ(9路/13路/19路)のボタン選択待ち。起動直後・新規対局のたびに最初に通る状態(10.5節参照)</td></tr>
-<tr><td><code>ChoosingGameMode</code></td><td>対局モード(レート戦/カジュアル)のボタン選択待ち(10.1節・11.1節参照)</td></tr>
-<tr><td><code>ChoosingCasualStrength</code></td><td>(カジュアル選択時のみ)AIの強さの段階選択待ち(11.1節参照)</td></tr>
-<tr><td><code>EngineStarting</code></td><td>KataGo起動中。<code>KataGoClient::IsStartupComplete()</code>をポーリング</td></tr>
-<tr><td><code>HumanToMove</code></td><td>黒(人間)の手番。クリック/<code>P</code>/<code>R</code>を受け付ける</td></tr>
-<tr><td><code>AIThinking</code></td><td>白(KataGo)の<code>genmove</code>応答待ち。<code>TryGetGenMoveResult</code>をポーリング</td></tr>
-<tr><td><code>WaitingForScore</code></td><td>両者パス後、<code>final_score</code>応答待ち</td></tr>
-<tr><td><code>GameOver</code></td><td>対局終了。<code>V</code>キーで棋譜再生(<code>Reviewing</code>)へ移れる(9.3節参照)。<code>N</code>キーで新規対局(<code>ChoosingBoardSize</code>)へ戻れる(9.6節参照)。レート戦終了直後は自動解析(12章)が終わるまで<code>N</code>/<code>V</code>とも無効</td></tr>
-<tr><td><code>Reviewing</code></td><td>棋譜再生中。<code>→</code>/<code>←</code>キーで手を進め戻しする。<code>N</code>キーで新規対局(<code>ChoosingBoardSize</code>)へ戻れる(9.6節参照)</td></tr>
-<tr><td><code>ViewingMistakeStats</code></td><td>苦手分野の解析結果を表示中(12.6節参照)。「戻る」ボタンで元の状態(<code>GameOver</code>/<code>Reviewing</code>)に戻る</td></tr>
+<tr><td>盤の大きさの選択(起動直後・新規対局時)</td><td><code>9路</code> / <code>13路</code> / <code>19路</code></td><td>-</td></tr>
+<tr><td>対局モードの選択(盤の大きさ選択直後)</td><td><code>レート戦</code> / <code>カジュアル</code></td><td>-</td></tr>
+<tr><td>カジュアルの強さ選択(カジュアル選択時のみ、盤中央に表示)</td><td>タブで範囲を切り替え、5列2行のグリッドから段級位を選択</td><td>-</td></tr>
+<tr><td>着手</td><td>(盤の交点をマウスでクリック)</td><td>-</td></tr>
+<tr><td>パス</td><td><code>パス</code>(対局中のみ表示)</td><td><code>P</code></td></tr>
+<tr><td>投了</td><td><code>投了</code>(対局中のみ表示)</td><td><code>R</code></td></tr>
+<tr><td>地合い表示の切替</td><td><code>地合い表示</code></td><td><code>T</code></td></tr>
+<tr><td>着手ヒント表示の切替</td><td><code>着手ヒント</code></td><td><code>H</code></td></tr>
+<tr><td>棋譜再生を開始(対局終了後)</td><td><code>棋譜再生</code>(対局終了後のみ表示)</td><td><code>V</code></td></tr>
+<tr><td>棋譜再生中に1手進める・戻す</td><td><code>次の手</code> / <code>前の手</code>(再生中のみ表示)</td><td><code>→</code> / <code>←</code></td></tr>
+<tr><td>新規対局を開始(対局終了後・棋譜再生中)</td><td><code>新規対局</code>(対局終了後・棋譜再生中のみ表示)</td><td><code>N</code></td></tr>
+<tr><td>苦手分野の解析結果を表示(対局終了後・棋譜再生中)</td><td><code>苦手分野</code>(対局終了後・棋譜再生中のみ表示)</td><td>-</td></tr>
+<tr><td>終了</td><td><code>終了</code></td><td><code>Esc</code></td></tr>
 </tbody>
 </table>
 <p>
-現在の<code>TurnState</code>とアゲハマ数(<code>GoBoard::CapturesBy</code>)は、盤の下マージンに
-<code>DrawText</code>で常時表示します(<code>DrawHud</code>、<code>BuildStatusText</code>)。
-<code>DrawText</code>はかな漢字を含むUnicode文字に対応しているため、表示文言は日本語です。
-対局終了・投了・通信エラーのような割り込みが必要な通知は、既存のエラーダイアログのまま
-残しています(進行中の状態はHUD、区切りとなるイベントはダイアログという役割分担)。
+対局が両者パスで終了すると、KataGoの終局判定による結果(例: <code>B+3.5</code>)をダイアログで
+表示します。KataGoが投了した場合、あなたが投了操作をした場合も同様にダイアログで通知されます。
 </p>
-<div class="note">
 <p>
-<strong>文字化けの修正</strong>: 本プロジェクトは<code>/utf-8</code>オプションでコンパイルしており、
-ナロー文字列リテラル(<code>"..."</code>)はUTF-8でエンコードされる。これを<code>MessageBoxA</code>に
-そのまま渡すと、ANSI版はシステムのコードページ(日本語環境では多くの場合Shift-JIS)で解釈するため
-日本語部分が文字化けする。<code>Main.cpp</code>の<code>ShowMessageBoxUtf8</code>で
-<code>MultiByteToWideChar(CP_UTF8, ...)</code>によりUTF-16へ変換してから<code>MessageBoxW</code>へ
-渡すことでこれを解消している。<code>KataGoClient</code>の例外メッセージ(<code>LastError()</code>)や
-<code>std::exception::what()</code>も同様にUTF-8として扱われるため、すべての通知はこのヘルパー
-経由で表示している。
-</p>
-</div>
-<div class="note">
-<p>
-<strong>owner未指定のMessageBoxWは閉じた後のフォーカスの戻り先が不定になる(実機で検証)</strong>:
-<code>ShowMessageBoxUtf8</code>は元々すべての呼び出しで<code>owner</code>に<code>nullptr</code>を
-渡していたが、この場合ダイアログは所有者を持たない独立したトップレベルウィンドウになり、閉じた後に
-キーボードフォーカスがメインウィンドウへ確実に戻る保証が無いことを実機検証で確認した
-(<code>PostMessage</code>で送った<code>WM_KEYDOWN</code>/<code>WM_KEYUP</code>がメインウィンドウの
-ウィンドウプロシージャには届くものの、キー入力状態としては一切反映されなくなる現象として現れる)。
-11章のAI強さ設定機能の実装中、対局モード選択の直後にキー入力を受け付ける必要があるテストで発覚した。
-<code>ShowMessageBoxUtf8</code>に<code>HWND owner</code>引数を追加し、メインループ内の呼び出し箇所は
-すべて<code>renderer.GetWindowHandle()</code>を渡すよう修正した(アプリ全体の既存のダイアログにも
-同じ問題があった可能性があり、あわせて修正している)。唯一、<code>wWinMain</code>最外周の致命的
-エラーハンドラ(<code>renderer</code>自体の構築に失敗した場合にも実行され得る)だけは
-<code>renderer</code>が有効とは限らないため<code>nullptr</code>のままとしている。
-</p>
-</div>
-</section>
-
-<section id="katago">
-<h2>7. KataGo連携(<code>KataGoClient</code>)</h2>
-<p>
-<code>KurenaiGo::KataGoClient</code>(<code>Source/KataGoClient.h/.cpp</code>)は
-<code>katago.exe</code>を<code>gtp -model &lt;model.bin.gz&gt; -config &lt;gtp.cfg&gt;</code>で
-子プロセス起動し、標準入出力を匿名パイプでリダイレクトしてGTPのテキストコマンド/応答を
-やり取りします(<code>CreateProcessW</code> + <code>CreatePipe</code>によるWin32の標準的な
-「リダイレクトされた入出力を持つ子プロセス」の実装)。標準エラー出力(チューニング進捗等の
-診断ログ)は<code>KataGo/katago_stderr.log</code>へリダイレクトしています。
-</p>
-<h3>7.1 非同期処理</h3>
-<p>
-起動処理(<code>StartAsync</code>)とKataGoの着手要求(<code>RequestGenMove</code>)・終局判定
-(<code>RequestFinalScore</code>)は、OpenCLの初回チューニング(数十秒)やKataGoの思考時間
-(<code>time_settings 0 5 1</code>で最大5秒/手)がかかるため、いずれも専用スレッドで実行します。
-メインの描画ループは<code>TryGetGenMoveResult</code>等のポーリングで結果を受け取るだけなので、
-KataGoが応答を返すまでの間もウィンドウは応答なしにならず、盤面の再描画・リサイズ処理を続けられます。
-</p>
-<h3>7.2 座標変換</h3>
-<p>
-GTPの座標は列がA〜T(<code>I</code>を除く)、行が盤の下端から1始まりの数字です。
-<code>GoBoard</code>の座標系(<code>row=0</code>が下端、<code>col=0</code>が左端)と対応しているため、
-<code>ToVertex</code>/<code>ParseVertex</code>での変換は「列インデックスに応じて<code>A</code>から
-数え上げ、<code>I</code>をまたぐ場合は1つ増やす」「行はインデックス+1」という単純な計算のみで
-行っています。
-</p>
-<h3>7.3 GTPコマンド</h3>
-<table>
-<thead><tr><th>コマンド</th><th>用途</th></tr></thead>
-<tbody>
-<tr><td><code>boardsize &lt;9|13|19&gt;</code> / <code>clear_board</code> / <code>komi 6.5</code> / <code>time_settings 0 5 1</code></td><td>起動直後のハンドシェイク(<code>StartAsync</code>)。<code>boardsize</code>は選んだ盤の大きさ(10.5節参照)</td></tr>
-<tr><td><code>play &lt;B|W&gt; &lt;vertex|pass&gt;</code></td><td>人間の着手・パスをKataGo側の盤面にも反映する</td></tr>
-<tr><td><code>genmove &lt;B|W&gt;</code></td><td>KataGoに着手を生成させる。応答は着手・<code>pass</code>・<code>resign</code>のいずれか</td></tr>
-<tr><td><code>final_score</code></td><td>両者パス後の結果(例: <code>B+3.5</code>)取得</td></tr>
-<tr><td><code>quit</code></td><td>終了時にデストラクタから送信</td></tr>
-</tbody>
-</table>
-<h3>7.4 終了処理</h3>
-<p>
-<code>KataGoClient</code>のデストラクタは、進行中のワーカースレッドの完了を待ってから
-<code>quit</code>を送信し、プロセス終了を最大3秒待って、それでも終了しない場合は
-<code>TerminateProcess</code>で強制終了します。これによりKurenaiGoを閉じても<code>katago.exe</code>が
-残留しません。
+盤の下の余白には現在の手番状態・アゲハマ(お互いが取った石の数)・レーティング・現在の対局モード
+(<code>レート戦</code>/<code>カジュアル</code>)・AIの強さ(目安、段級位換算付き。例:
+<code>AI強さ(目安):1000 [1段相当]</code>)を表示するHUDが常時表示されます。
 </p>
 </section>
 
 <section id="analysis">
-<h2>8. 解析結果の可視化(勝率・地合い・着手ヒント)</h2>
+<h2>5. 勝率・地合い・着手ヒント</h2>
 <p>
-黒(人間)の手番になるたびに<code>KataGoClient::RequestAnalysis(Stone::Black)</code>で
-<code>kata-analyze</code>による局面解析を要求し、結果を<code>DrawWinrateBar</code>
-(勝率バー)・<code>DrawTerritoryOverlay</code>(地合い可視化、<code>T</code>キーでトグル)・
-<code>DrawMoveHints</code>(着手ヒント、<code>H</code>キーでトグル)の3つの描画関数で
-可視化しています。<code>KurenaiEngine2D</code>には文字描画機能が無いため、勝率は数値では
-なく黒/白の面積比を表す横棒、地合いは色つきの半透明オーバーレイ、ヒントは順位別に色分けした
-マーカーとして、すべて既存の<code>DrawSprite</code>(矩形スプライト)のみで表現しており、
-この機能のためにエンジン(KurenaiEngineサブモジュール)側の変更は行っていません。
+黒番(人間)の手番になるたびに、KataGoの局面解析を使って盤の上に勝率バー(黒/白の優勢を示す横棒)を
+常時表示します。あわせて次の2つの表示を切り替えられます。
 </p>
-<h3>8.1 kata-analyzeのプロトコル(実機で検証)</h3>
-<p>
-<code>kata-analyze &lt;B|W&gt; interval 50 ownership true</code>を送ると、GTPの即時応答
-(<code>= </code>)は返らず、代わりに<code>info move &lt;頂点&gt; visits N ... winrate W ...
-scoreLead S ... order K ... pv ... [次のinfo move...] ownership &lt;361個の浮動小数&gt;</code>
-という1行の報告が定期的に再送され続けます(差分ではなく毎回全体を送り直す)。
-<code>winrate</code>/<code>scoreLead</code>/<code>ownership</code>はいずれも
-<strong>コマンド引数で指定した色(手番側)から見た値</strong>で、<code>order 0</code>の
-候補手が最有力手(=現局面の評価値として使う値)です。<code>ownership</code>配列(19路なら
-361要素)は<strong>盤面左上(GTPのA19)がindex 0</strong>で、右→下へ行優先(row-major)に
-並びます。KurenaiGoの内部座標(<code>row=0</code>が盤面下端・<code>col=0</code>が左端)に
-対応させると <code>ownershipIndex = (Size - 1 - row) * Size + col</code> となります
-(黒石をA19に置いて解析し、index 0付近の値が最も強く反応することを確認して検証済み)。
-</p>
-<div class="note">
-<p>
-<strong>解析の停止方法に関する既知の癖</strong>: kata-analyzeは一般的には空行を送ると
-停止しますが、このKataGoビルドでは「報告を受け取ってから短時間で空行による停止要求を送ると、
-その後の応答が返らなくなる(ハングする)」現象を実機で複数回確認しました。空行の代わりに
-通常のGTPコマンド(KurenaiGoでは<code>protocol_version</code>)を送ると解析はただちに中断され、
-そのコマンド自身の正常な応答が届きます。この方式は繰り返しの実機検証で安定して動作したため、
-<code>KataGoClient::ExchangeAnalyze</code>では停止に空行ではなく<code>protocol_version</code>を
-使っています。
-</p>
-</div>
-<h3>8.2 解析タイミングと打ち切り</h3>
-<p>
-解析は経過時間(目安600ms)または最有力手のvisits数(目安250)のいずれかに達し次第打ち切り、
-どちらも満たさない場合でも1500msでハードキャップします。応答が来るまでの間も
-<code>KataGoClient</code>の非同期パターン(<code>RequestAnalysis</code> /
-<code>TryGetAnalysisResult</code>のポーリング)により描画ループは止まりません。解析は
-対局進行に必須ではない補助情報のため、失敗しても<code>KataGoAnalysisResult::Failed</code>で
-通知するのみで、genmove失敗時のようなダイアログ表示・対局中断は行いません。
-</p>
-<h3>8.3 描画</h3>
 <table>
-<thead><tr><th>要素</th><th>描画方法</th></tr></thead>
+<thead><tr><th>表示</th><th>切替キー</th><th>内容</th></tr></thead>
 <tbody>
-<tr><td>勝率バー</td><td>盤の上マージンに、黒視点の勝率で2分割した横棒(黒側は暗色、白側は明色のスプライト)を常時表示</td></tr>
-<tr><td>地合い可視化(<code>T</code>キー)</td><td>石のない交点のみ、黒視点のownership値が閾値(0.15)を超えたら、黒地=青系・白地=赤系の半透明スプライトを重ねる</td></tr>
-<tr><td>着手ヒント(<code>H</code>キー)</td><td>候補手を<code>Order</code>昇順に並べ、上位3件を金・銀・銅の色分けマーカーで表示(黒の手番中のみ)</td></tr>
+<tr><td>地合い表示</td><td><code>T</code></td><td>石のない交点に、黒地=青系・白地=赤系の色つきオーバーレイを重ねて地の所有率を可視化します。</td></tr>
+<tr><td>着手ヒント</td><td><code>H</code></td><td>候補手の上位3件を金・銀・銅で色分けして表示します(黒の手番中のみ)。</td></tr>
 </tbody>
 </table>
+<p>
+解析には数百ms〜1.5秒ほどかかることがありますが、その間もアプリの操作は止まりません。解析は
+対局の進行に必須ではない補助情報のため、何らかの理由で失敗しても対局そのものは中断されません。
+</p>
 </section>
 
 <section id="sgf">
-<h2>9. 棋譜の保存・再生(SGF)</h2>
+<h2>6. 棋譜の保存と再生</h2>
 <p>
-<code>KurenaiGo::Sgf</code>(<code>Source/Sgf.h/.cpp</code>)は、対局の記録をSGF
-(Smart Game Format)として書き出す・読み込む機能を提供します。分岐(variation)の無い
-単一手順のみを扱う最小限のサブセットで、自分自身が書き出したSGFを読み戻せることを
-目的としています。
-</p>
-<h3>9.1 座標変換</h3>
-<p>
-SGFの座標は列→行の順でa〜s(0〜18)、行は盤面<strong>上端</strong>が0です。KurenaiGoの内部座標
-(<code>row=0</code>が盤面下端)との変換は<code>sgfRow = (Size-1) - row</code>で、8.1節で
-説明した<code>kata-analyze</code>のownership配列と同じ変換則を再利用しています。パスは
-<code>B[]</code>/<code>W[]</code>(空値)で表します。
-</p>
-<h3>9.2 保存の流れ</h3>
-<p>
-<code>Main.cpp</code>は対局中、黒白どちらの着手・パスも<code>std::vector&lt;SgfMove&gt;</code>
-(<code>moveHistory</code>)へ記録します。対局終了(自分の投了・KataGoの投了・
-<code>final_score</code>による終局のいずれか)の時点で、結果文字列
-(自分の投了→<code>"W+R"</code>、KataGoの投了→<code>"B+R"</code>、終局→<code>final_score</code>の
-応答をそのまま使用)とともに<code>Games\</code>フォルダ(実行ファイルと同じ場所、
-<code>ResolveAppDataPath(L"Games")</code>)へ、タイムスタンプ付きファイル名
-(<code>game_YYYYMMDD_HHMMSS.sgf</code>)で保存します。棋譜保存は対局結果の表示を妨げない
-補助機能のため、失敗しても例外は投げず<code>error.log</code>に記録するのみです。保存先パスは
-<code>lastSavedGamePath</code>として保持し、9.3節の棋譜再生で読み直すのに使います。
-</p>
-<h3>9.3 棋譜再生(Reviewing)</h3>
-<p>
-<code>TurnState::Reviewing</code>という状態を追加し、対局終了(<code>GameOver</code>)後に
-<code>V</code>キーを押すと<code>lastSavedGamePath</code>を<code>ReadSgfFile</code>で読み直して
-遷移します(メモリ上の<code>moveHistory</code>を使い回さず、実際にファイルから読み直すことで
-読み込み機能そのものを検証しています)。再生中は<code>reviewMoveIndex</code>(現在何手目まで
-進めたか)を持ち、<code>→</code>/<code>←</code>キーで<code>[0, 総手数]</code>の範囲を前後します。
+対局が終了すると、棋譜が<code>Games\</code>フォルダ(実行ファイルと同じ場所)へSGF形式で自動保存されます
+(ファイル名は<code>game_YYYYMMDD_HHMMSS.sgf</code>)。保存に失敗しても対局結果の表示は妨げず、
+<code>error.log</code>に記録するのみです。
 </p>
 <p>
-<code>GoBoard</code>には手を戻す操作が無いため、<code>reviewMoveIndex</code>が変化するたびに
-空の<code>GoBoard</code>を新しく作り、0手目から<code>reviewMoveIndex</code>手目の直前まで
-<code>TryPlay</code>/<code>Pass</code>を再生し直して盤面を再構築します(<code>ReplayMoves</code>)。
-19路・数百手程度の対局であれば、ナビゲーションのたびに毎回再生し直すコストは無視できるため、
-差分更新は行っていません。この盤面再構築は表示専用で、9.4節のKataGo側の解析とは別経路です。
-</p>
-<h3>9.4 再生中の解析表示・損失グラフ</h3>
-<p>
-棋譜再生中に着手位置(<code>reviewMoveIndex</code>)を動かすと、その局面をKataGoにも解析させます。
-対局中の<code>kataGo</code>(<code>KataGoClient</code>)は対局の最新局面を指したままのため、
-<code>KataGoClient::ResetBoard()</code>(<code>clear_board</code>を送るだけの同期呼び出し)で
-盤面を空にしてから、0手目から対象の手数の直前まで<code>PlayMove</code>/<code>PlayPass</code>で
-再生し直し、その局面の手番(0手目なら黒、それ以外は直前の手の<code>Opponent</code>)で
-<code>RequestAnalysis</code>を要求します(<code>Main.cpp</code>の<code>requestReviewAnalysisFor</code>)。
-呼び出し側の<code>triggerReviewAnalysisIfNeeded</code>は現在の手数を優先しつつ、手が空いていれば
-9.5節の言語化に使う1手前の局面もあわせて解析します。
+対局終了後(結果ダイアログを閉じた後)に<code>V</code>キー(または<code>棋譜再生</code>ボタン)を
+押すと、直前に保存した棋譜を読み込んで再生できます。<code>→</code>/<code>←</code>キーで1手ずつ
+進める・戻すと、その時点の盤面が再現されます。手を進めるたびにその局面をKataGoが解析し、
+勝率バーと数値(勝率%・目差)を表示します(初めて訪れる手数は解析に数百ms〜数秒かかることが
+ありますが、一度解析した手数は結果を覚えているため再訪時は即座に表示されます)。
 </p>
 <p>
-解析結果は手数ごとに<code>reviewWinrateCache</code>/<code>reviewScoreLeadCache</code>
-(黒視点に変換済み)へキャッシュし、一度解析した手数を再訪した場合は即座に表示します。
-KataGoは1件ずつしかリクエストを処理できない設計のため、解析要求中
-(<code>reviewAnalysisPendingIndex != -1</code>)は次のreset/replayを送らず、前の解析が
-終わるまで待ちます。これにより素早く連続してナビゲーションしても描画ループがブロックされることは
-ありません(ただし、初めて訪れる手数は解析(通常600ms〜1.5秒)+再生コストの分だけ表示が
-遅れます。数百手を再生し直す場合、再生自体も同期呼び出しのため体感できる遅延が出ることがあります
-が、リアルタイム対局とは異なる「棋譜再生」機能として許容範囲と判断しています)。
+盤の上部には対局を通した勝率の推移(損失グラフ)が表示され、どの手で形勢が動いたかを一目で
+確認できます。損失グラフの上には、その手が「最善手級」「やや損な手」「緩着」「悪手」のどれに
+当たるかを、勝率の変化(例: 62.3%→54.1%)とともに日本語の文章で表示します(最善手でなかった
+場合は、KataGoが薦める最善手の座標も添えます)。この判定はKataGoを使った解析ツールで一般的に
+用いられる目安を参考にした一例であり、手筋の正しさを厳密に判定するものではありません。
 </p>
-<p>
-解析結果の表示(<code>DrawWinrateText</code>)は対局中・再生中どちらでも同じ値
-(<code>ToBlackWinrate</code>/<code>ToBlackScoreLead</code>)を使い、勝率バーの下に
-「黒 62.3%  目差 +4.5」のように数値で表示します。損失グラフ(<code>DrawLossGraph</code>)は
-盤の上部に確保した帯(<code>kGraphAreaHeight</code>、対局中は空のまま)に、手数ごとの黒視点勝率を
-折れ線で描画します。キャッシュ済みの区間のみ線分を結ぶため、未解析の手数は線が途切れ、
-現在の手数には小さな丸印を表示します。全手数の一括先読みは行わず、訪れた手数だけ解析する
-遅延評価方式のため、グラフは棋譜を辿るにつれて徐々に完成していきます。
-</p>
-<h3>9.5 着手の言語化</h3>
-<p>
-損失グラフの上には、その手数に至った1手(<code>reviewRecord.Moves[reviewMoveIndex - 1]</code>)が
-どの程度の手だったかを日本語の文章で表示します(<code>BuildMoveCommentary</code>)。着手前後の
-局面の評価が両方キャッシュ済みになった時点で、着手した側の視点に変換した勝率
-(<code>ToBlackWinrate</code>の値を、着手者が白なら<code>1 - 値</code>にする)の差分から
-分類します。
-</p>
-<table>
-<thead><tr><th>勝率の変化(着手者視点)</th><th>表示</th></tr></thead>
-<tbody>
-<tr><td>-2ポイント以上、または着手前の局面でKataGoの最有力候補手(<code>Order == 0</code>)と一致</td><td>最善手級です</td></tr>
-<tr><td>-2〜-5ポイント</td><td>やや損な手です</td></tr>
-<tr><td>-5〜-15ポイント</td><td>緩着です</td></tr>
-<tr><td>-15ポイント未満</td><td>悪手です</td></tr>
-</tbody>
-</table>
-<p>
-最善手でなかった場合は、着手前の局面でのKataGoの最有力候補手の座標を<code>FormatVertex</code>
-(<code>KataGoClient::ToVertex</code>と同じA〜T(<code>I</code>を除く)+行番号の表記)で文中に
-添えます。この閾値はKataGoを使った解析ツールで一般的に用いられる目安を参考にした一例であり、
-手筋の正しさを厳密に判定するものではありません(死活・シチョウ・ヨセ等の詳細な分類は今後の
-課題とし、13章参照)。
-</p>
-<p>
-言語化には着手<strong>前</strong>の局面の評価・最有力候補手も必要なため、
-<code>requestReviewAnalysisFor(target)</code>という関数に一般化し、
-<code>triggerReviewAnalysisIfNeeded</code>は現在の手数を優先しつつ、要求が不要だった場合
-(=現在の手数はすでに解析要求済みか解析済み)に限り1手前の局面もあわせて要求します。KataGoは
-1件ずつしかリクエストを処理できないため、現在の手数の表示を遅らせてまで1手前を優先することは
-ありません。前後どちらかが未キャッシュの間は「解析中...」と表示します。最有力候補手の座標は
-<code>reviewBestMoveRowCache</code>/<code>reviewBestMoveColCache</code>として、勝率・目差の
-キャッシュ(9.4節)と同様に手数ごとにキャッシュします。
-</p>
-<p>
-このコメント表示の分だけ、盤上部の帯の高さ(<code>kGraphAreaHeight</code>)を90pxから130pxへ
-拡張し、損失グラフ(9.4節)はその下に詰めて描画するようレイアウトを調整しました。
-</p>
-<h3>9.6 新規対局(何度でも打ち直せる)</h3>
-<p>
-<code>GameOver</code>・<code>Reviewing</code>のどちらの状態からでも、<code>新規対局</code>
-ボタン(<code>N</code>キー)で<code>Main.cpp</code>の<code>startNewGame</code>を呼び、
-アプリを再起動せずに何度でも対局をやり直せます。<code>startNewGame</code>は<code>moveHistory</code>を
-クリアしたうえで<code>TurnState::ChoosingBoardSize</code>(10.5節の盤の大きさ選択)へ戻します。
-<code>board</code>(<code>GoBoard</code>)自体は盤の大きさボタン(<code>9路</code>/<code>13路</code>/
-<code>19路</code>)を選んだ時点で新しい大きさの空盤面として作り直されます。以降は初回起動時と
-同じ経路(盤の大きさ選択→モード選択→(カジュアルのみ)強さ選択→KataGo起動)を通って黒番(人間)の
-手番から再開します(11.1節参照。対局ごとに強さを変えるため、新規対局のたびにKataGoを起動し直す)。
-</p>
-<p>
-<code>lastSavedGamePath</code>・直前の<code>reviewRecord</code>はあえてクリアしません。次の対局が
-終われば<code>FinalizeGameResult</code>が<code>lastSavedGamePath</code>を新しい保存先で上書きし、
-<code>棋譜再生</code>ボタンから改めて読み直す(9.3節)ため、古い値を保持しておいても実害が
-ないためです。
-</p>
-<div class="note">
-<p>
-<strong><code>Reviewing</code>中は解析要求中(9.4節)を避けてから<code>ResetBoard()</code>を
-呼ぶ</strong>: 9.4節の通り<code>KataGoClient::ExchangeAnalyze</code>は解析中ずっと
-<code>m_IoMutex</code>を保持し続ける設計のため、解析要求中(<code>reviewAnalysisPendingIndex
-!= -1</code>)に<code>ResetBoard()</code>(内部で同期的に<code>Exchange("clear_board")</code>を
-呼ぶ)を呼ぶと、解析が終わるまで描画ループがブロックされてしまいます。これは
-<code>requestReviewAnalysisFor</code>が解析要求中の再要求を避けているのと同じ理由のため、
-<code>Reviewing</code>状態での<code>N</code>キー/ボタンは<code>reviewAnalysisPendingIndex ==
--1</code>の間だけ<code>startNewGame</code>を実行し、解析要求中は1フレーム見送ります(次に押した
-ときには解析が終わっているのが通常のため、実用上は連打すればすぐに反応します)。
-<code>GameOver</code>状態ではその時点で進行中のKataGoリクエストが無いため、この待ち合わせは
-不要です。
-</p>
-</div>
 </section>
 
 <section id="rating">
-<h2>10. 棋力の数値化(レーティング)</h2>
+<h2>7. レーティング(棋力の数値化)</h2>
 <p>
-<code>KurenaiGo::Rating</code>(<code>Source/Rating.h/.cpp</code>)は、対局結果からユーザーの
-レーティング(棋力の数値化)を計算・永続化する。標準的なElo式を使い、対局相手(KataGo)の
-レーティングとの相対評価として計算する。11章の通り、レート戦ではAIの強さ自体をこの
-ユーザーレーティングに合わせて毎回調整するため、Elo式の<code>opponentRating</code>には
-固定値ではなく「その対局で目標とした強さ(レーティング換算)」を渡す。
+レーティングは標準的なElo式で計算され、初期値は0(30級相当)です(3章の通り、盤の大きさごとに
+別々の初期値・履歴を持ちます)。レート戦は常にあなたの現在の盤の大きさでのレーティングと互角になる
+ようAIの強さを自動調整するため、勝つと上がり、負けると下がります(カジュアル対局はレーティングに
+影響しません)。
 </p>
-<pre><code>expected = 1 / (1 + 10^((opponentRating - userRating) / 400))
-newUserRating = userRating + K * (actualScore - expected)</code></pre>
 <p>
-ユーザーの初期値は<code>kInitialRating</code> = 0(11.6節の段級位換算における30級=最弱到達点に
-相当する値。11.3節のプレースメントモードの基準アンカー値としても使うが、同モードは現在
-11.6節の理由により無効化している)、<code>K</code>係数は<code>kEloK</code> = 32(Eloで広く
-使われる一般的な値)。
-<code>actualScore</code>は勝敗のみ(1.0=勝ち/0.0=負け/0.5=持碁)で、目差による重み付けは
-行わない(標準Elo外の独自ルールになるため採用していない)。
+レーティングは段級位インデックスの3乗に比例するよう換算されており(1段のレーティングがちょうど
+1000になる基準点で、段位が上がるほど1段に必要なレーティング差が大きくなります)、実世界の段級位を
+保証する値ではありませんが、「その時点で自分と互角になるよう調整されたAIに対して、自分がどれだけ
+勝ち越せているか」のおおよその目安として段級位表示に対応させています。この換算は事前に科学的な
+較正を行ったものではなく、妥当だと考えられる調整可能な初期値です。
+</p>
+<p>
+レート戦の結果は盤の大きさに応じたファイル(19路は<code>rating_history.txt</code>、13路は
+<code>rating_history_13.txt</code>、9路は<code>rating_history_9.txt</code>。いずれも実行ファイルと
+同じ場所)へ1局ごと追記され、次回起動時にも引き継がれます。
 </p>
 <div class="note">
 <p>
-<strong>実世界の段級位を表す値ではない</strong>: レート戦は常にAIの強さをユーザー自身の
-レーティングへ合わせにいく設計(11章)のため、Elo式の期待勝率は理論上常に0.5に近づき、
-勝敗によるレーティング変動は概ね<code>±K/2</code>(≒16点)相当になる。このレーティングは
-「その時点で自分と互角になるよう調整された相手に対する、勝ち越し・負け越しの推移」を
-数値化したものであり、KataGoや自分自身の実力を客観的な段級位で評価したものではない。
+<strong>初期レーティング決定(プレースメント)は現在無効化中</strong>: 対局回数0のユーザー向けに、
+特別な対局中にレーティングを素早く測定する仕組みを用意する予定でしたが、現在はいったん無効化して
+います。対局回数0のユーザーも通常のレート戦としてレーティング0(30級相当)から即座に対局を
+始めます。
 </p>
 </div>
-<h3>10.1 対局モード(レート戦/カジュアル)</h3>
-<p>
-対局モードの選択は、当初<code>MB_YESNO</code>の<code>ShowMessageBoxUtf8</code>によるモーダル
-ダイアログとして実装していたが、11章のカジュアル強さ選択(5段階)を追加するにあたり、
-既存の盤下ボタン行(<code>ButtonSpec</code>/<code>DrawButton</code>)による選択に統一した
-(モーダルダイアログを使い続ける理由が無くなったため。<code>TurnState::ChoosingBoardSize</code>
-(10.5節、盤の大きさ選択)の直後の<code>TurnState::ChoosingGameMode</code>で
-「レート戦」/「カジュアル」の2択を、カジュアルを選んだ場合のみ続けて
-<code>TurnState::ChoosingCasualStrength</code>で強さの5段階を選ぶ)。選択結果は
-<code>GameMode::Ranked</code>/<code>GameMode::Casual</code>として対局中保持され、盤下のHUDに
-常時表示する。カジュアルを選んだ場合、SGFの保存(9章)は今まで通り行うが、レーティングの
-更新・履歴への追記は一切行わない。
-</p>
-<h3>10.2 対局結果文字列からの勝敗判定</h3>
-<p>
-対局終了時の結果文字列(<code>"W+R"</code>=人間の投了、<code>"B+R"</code>=KataGoの投了、
-または<code>final_score</code>の応答、例<code>"B+3.5"</code>)から、
-<code>TryParseBlackWinFraction</code>が黒番(人間)視点の勝敗を取り出す。
-<code>"B+"</code>で始まれば勝ち(1.0)、<code>"W+"</code>で始まれば負け(0.0)、
-<code>"0"</code>(持碁)は0.5とする。解釈できない文字列の場合はレーティングを更新せず
-<code>error.log</code>に記録するのみとする(存在しないデータを捏造しない)。
-</p>
-<h3>10.3 永続化(rating_history.txt)</h3>
-<p>
-現在値だけでなく対局を跨いだ推移を追えるよう、レート戦の結果が出るたびに1行
-<strong>追記</strong>する履歴ファイルとして設計している(<code>rating_history.txt</code>、
-<code>ResolveAppDataPath</code>でexeと同じフォルダに解決)。1行のフォーマットは
-<code>&lt;YYYYMMDD_HHMMSS&gt; &lt;この対局後のレーティング&gt; &lt;対局結果文字列&gt;</code>
-(<code>BuildGameFileName</code>と同じ<code>put_time</code>呼び出しを流用したタイムスタンプ)。
-通常の対局結果文字列(<code>"W+R"</code>等)に加えて、11.3節の初期レーティング決定
-(プレースメント)で確定した行は結果欄が<code>"PLACEMENT"</code>になる(収束による確定・
-収束前に対局が終わったことによるフォールバック確定のいずれも同じ表記とし、通常の対局結果とは
-異なる由来であることが履歴から分かるようにするため)。起動時は全行を読み、パースできた行数を
-対局数、最後の行の値を現在のレーティングとして復元する(<code>LoadRating</code>、ファイル
-不在・全行パース失敗時は初期値にフォールバックし例外は投げない)。今回のパスでは推移の記録の
-みを行い、グラフ等での可視化(9.4節の損失グラフに相当するもの)は未実装(13章参照)。
-</p>
-<h3>10.5 盤の大きさ(9路/13路/19路)ごとの分離</h3>
-<p>
-<code>TurnState::ChoosingBoardSize</code>を<code>ChoosingGameMode</code>より前に追加し、起動直後・
-新規対局(9.6節)のたびに最初に通る状態にした。盤下ボタン(<code>9路</code>/<code>13路</code>/
-<code>19路</code>)を選ぶと<code>currentBoardSize</code>(<code>Main.cpp</code>)にその値を保持し、
-<code>board</code>(<code>GoBoard</code>)をその大きさで作り直してから<code>ChoosingGameMode</code>
-(10.1節)へ進む。<code>currentBoardSize</code>は<code>ComputeBoardLayout</code>・
-<code>DrawBoard</code>・<code>KataGoClient::StartAsync</code>(GTPの<code>boardsize</code>コマンド)・
-SGF書き出し(<code>SgfGameRecord::BoardSize</code>)など、盤の大きさに依存するすべての箇所に渡す
-(2〜3章参照)。
-</p>
-<p>
-9路・13路・19路は互角になる強さの基準がまったく異なるため、レーティングは<strong>盤の大きさごとに
-完全に独立したファイル</strong>で管理する(<code>rating_history.txt</code>=19路、
-<code>rating_history_13.txt</code>=13路、<code>rating_history_9.txt</code>=9路。いずれも
-<code>ResolveAppDataPath</code>でexeと同じフォルダに解決)。19路は既存ユーザーの
-<code>rating_history.txt</code>をそのまま使い続けるため、ファイル名は変更していない。
-<code>Main.cpp</code>は起動時に3つとも<code>LoadRating</code>で読み込んでおき、
-<code>CurrentUserRating()</code>/<code>CurrentRatingPath()</code>という2つのラムダが
-<code>currentBoardSize</code>に応じて対応する<code>RatingData</code>/パスへの参照を返す
-(10.1〜10.4節・11章のレーティング更新・AIの強さ計算は、すべてこの2つの参照経由で行うよう
-書き換えた)。対局中に盤の大きさが変わることは無い(選び直しは<code>ChoosingBoardSize</code>のみ)
-ため、フレームごとに参照先を解決し直しても矛盾は生じない。
-</p>
-<h3>10.6 盤の星(hoshi)の標準的な配置</h3>
-<p>
-9路・13路は4隅+天元の5箇所(19路のような辺の星は無い)、19路は4隅+辺+天元の9箇所という、
-それぞれの盤の大きさで広く使われる標準的な配置を<code>HoshiPointsForBoardSize</code>
-(<code>Main.cpp</code>)にハードコードしている。19路の9箇所は0-indexedで3・9・15の
-3×3の組み合わせとして機械的に生成できるが、9路・13路は辺の星が無い非対称なパターンのため、
-座標を1つずつ列挙している。
-</p>
 </section>
 
 <section id="strength">
-<h2>11. 棋力に応じたAIの強さ設定</h2>
+<h2>8. AIの強さ設定</h2>
 <p>
-レート戦・カジュアルいずれの対局でも、ユーザーが指定した(あるいはレート戦なら自動計算した)
-目標レーティングに応じてKataGoの探索の深さ(<code>maxVisits</code>)を調整し、対局開始時に
-その強さでKataGoを起動する。
-</p>
-<h3>11.1 対局開始前に強さを確定し、強さが決まってからKataGoを起動する</h3>
-<p>
-M5時点では「体感の起動待ち時間を減らす」ため、<code>kataGo.StartAsync(...)</code>を呼んだ
-直後にモード確認ダイアログを表示し、KataGoの起動完了を待たずに済ませていた。しかし本機能では
-強さ(<code>maxVisits</code>)を起動時のコマンドライン引数としてしか指定できない
-(11.4節参照)ため、強さが決まる前にKataGoを起動してしまうと意味が無い。そのため
-<strong>モード選択→(カジュアルのみ)強さ選択→KataGo起動</strong>の順に変更した
-(体感の起動待ち時間は増えるが、正しい強さで起動するための必須の順序である)。
+AIの強さは、KataGo公式の「Human SLモデル」により、実際の段級位(20級〜9段)に応じた人間の棋譜の
+打ち筋(悪手も含む)を再現します。通常のニューラルネットは探索回数を絞っても一手ごとの質が高い
+ままアマチュアには強すぎるため、この方式でなければ「弱いAI」を体感しにくいという課題に対応した
+ものです。
 </p>
 <p>
-<code>TurnState</code>に<code>ChoosingGameMode</code>(「レート戦」/「カジュアル」の2択、
-盤下ボタン)・<code>ChoosingCasualStrength</code>(カジュアル選択時のみ、強さ5段階の選択、
-盤下ボタン)を追加した。強さが確定すると<code>beginGameWithTargetRating(targetRating)</code>
-(<code>Main.cpp</code>)が<code>ComputeMaxVisitsForRating</code>で<code>maxVisits</code>を求め、
-<code>kataGo.StartAsync(...)</code>を呼んで<code>TurnState::EngineStarting</code>へ遷移する
-(以降は既存の起動待ちポーリングをそのまま使う)。<code>startNewGame</code>(9.6節、新規対局)は
-盤面・着手履歴をリセットして<code>ChoosingGameMode</code>へ戻すだけの処理に簡略化され、
-初回起動時のセットアップと新規対局時のセットアップが同じ経路を通るようになった(その後10.5節で
-<code>ChoosingGameMode</code>の前に<code>ChoosingBoardSize</code>を追加した際も、
-<code>startNewGame</code>の戻り先を<code>ChoosingBoardSize</code>に変えるだけで済んだ)。
-</p>
-<h3>11.2 レーティング→強さ(maxVisits)の写像(廃止済み。11.6.4節参照)</h3>
-<div class="note">
-<p>
-<strong>この節のコードは削除済み</strong>: 以下は開発過程の記録であり、現在の
-<code>Main.cpp</code>には存在しない。当初はHuman SLモデル未配置時に<code>maxVisits</code>の
-線形補間だけで強さを調整するフォールバックを実装していたが、11.6.4節の理由により
-フォールバックという設計自体を廃止し、Human SLモデルが無い場合は対局を開始できない仕様に
-変更したため、このコードは丸ごと削除した。
-</p>
-</div>
-<pre><code>// 削除済み(かつてのフォールバック用コード)
-constexpr int kMinAiVisits = 20;    // 弱め
-constexpr int kMaxAiVisits = 500;   // gtp.cfgの元の既定値をそのまま上限に使う
-constexpr double kAiStrengthScalingMinRating = RatingForRankIndex(kHumanSLMinRankIndex); // 20級
-constexpr double kAiStrengthScalingMaxRating = RatingForRankIndex(kHumanSLMaxRankIndex); // 9段</code></pre>
-<p>
-目標レーティングをこの範囲で線形補間して<code>maxVisits</code>を求める設計だった
-(<code>ComputeMaxVisitsForRating</code>)。レート戦の目標レーティングは常に
-<code>CurrentUserRating().Rating</code>(現在選択中の盤の大きさでの自分のレーティングと
-互角の相手にする設計、10.5節参照)。
-</p>
-<div class="note">
-<p>
-<strong>不具合修正から仕様変更に至った経緯</strong>: 当初このスケーリング範囲は
-<code>1000.0</code>〜<code>2000.0</code>という固定値だったが、これは11.6節の段級位換算
-(1段=レーティング1000)を導入する前、初期レーティング1500を基準にしていた頃の名残だった。
-新しい換算では20級〜1級のレーティングは約37〜903にしかならず、すべて<code>1000.0</code>未満に
-収まってしまうため、カジュアル対局で20級〜1級のどれを選んでも<code>maxVisits</code>が一律20
-(<code>kMinAiVisits</code>)にクランプされ、級位帯の強さ選択が実質的にまったく効かない状態に
-なっていた。実機検証(<code>gtp_logs</code>の<code>Config override: maxVisits = ...</code>行を
-確認)で20級選択時・1級選択時ともに<code>maxVisits = 20</code>と記録されることを確認し、この
-不具合を特定した。まずはスケーリング範囲をカジュアルUIで実際に選べる範囲(20級〜9段の理論
-レーティング)に一致させて修正し、実機検証で20級選択時に<code>maxVisits = 20</code>、1級選択時に
-<code>maxVisits = 228</code>と段階ごとに異なる値が渡ることを確認した。しかしこの数値修正では
-「探索回数を絞ってもKataGoの政策ネット自体の一手の質が高いまま」という11.6節冒頭の根本課題は
-解決しないため、フォールバックという設計自体を廃止し11.6.4節のゲーティングへ変更した。
-</p>
-</div>
-<h3>11.3 初期レーティング決定(プレースメント)モード</h3>
-<div class="note">
-<p>
-<strong>現在いったん無効化中</strong>: 11.6節のレーティング基準点変更(1500→0)に伴い、
-以下のEMA・収束判定まわりの初期値も合わせて再検討する必要があるため、<code>Main.cpp</code>の
-<code>constexpr bool kPlacementModeEnabled = false;</code>で無効化している。無効化中は
-対局回数0のユーザーも通常のレート戦としてレーティング0(30級相当)から即座に対局を始める
-(<code>isCurrentGamePlacement</code>が常に<code>false</code>になるだけで、以下の
-<code>PlacementTracker</code>本体・関連コードは再有効化に備えて削除せず残している)。
-</p>
-</div>
-<p>
-対局回数0(<code>CurrentUserRating().GamesPlayed == 0</code>、盤の大きさごとに別々に判定、
-10.5節参照)のままレート戦を始めた場合のみ発動する(有効化されていれば)。強さの決め方自体は
-11.6節のHuman SLモデルによる段級位ベースの強さ決定と同じ。特別なのは、対局<strong>中</strong>にレーティング
-推定値を追跡し、収束したら対局の結果を待たずにその時点で確定する点である。
+このHuman SLモデル(<code>b18c384nbt-humanv0.bin.gz</code>)は起動時に配置の有無を確認し、
+<strong>未配置の場合は対局自体を開始できません</strong>(2章参照。盤の大きさ・対局モードの選択画面
+には進めず、配置を促すメッセージのみ表示されます)。
 </p>
 <p>
-黒(人間)の手番になるたびにすでに<code>kata-analyze</code>で取得している
-<code>WinrateForColorToMove</code>(黒視点勝率、8章)を、Eloの期待勝率式の逆算に使う。
+レート戦では自分のレーティングと互角になる段級位が自動的に選ばれます。カジュアルでは、盤中央に
+表示されるタブ(<code>20〜11級</code>/<code>10〜1級</code>/<code>1〜9段</code>)とボタングリッドから
+好きな段級位を直接選べます(4章参照)。
 </p>
-<pre><code>// expected = 1/(1+10^((opponentRating-rating)/400)) をratingについて解いた式
-double InvertEloForRating(double expectedScore, double opponentRating);</code></pre>
-<p>
-<code>Rating.h/.cpp</code>に<code>ComputeEloDelta</code>と対になる関数として追加した。
-<code>Main.cpp</code>の<code>PlacementTracker</code>構造体が、手番ごとの勝率を指数移動平均
-(EMA、重み0.15)へ取り込み、<code>InvertEloForRating</code>で瞬間推定レーティングを求めて
-直近8件の履歴を保持する。この直近8件から「収束率」(<code>PlacementTracker::ConvergenceRate()</code>、
-0.0〜1.0)を計算し、<code>kConvergenceRateThreshold</code>(0.8=80%)以上になった時点で
-「収束」とみなす。収束率は、サンプル数がまだ少ない間(<code>kMinSamples</code>=10未満、または
-直近ウィンドウが8件埋まっていない間)は幅(spread)を評価するだけのデータが揃っていないため、
-サンプル数の到達度(<code>kMaxSamples</code>=60に対する割合)のみを使う。データが揃った後は、
-「直近8件の幅(spread)がkConvergenceThreshold(15点)未満に近づいた度合い」と「サンプル数が
-kMaxSamplesに近づいた度合い」のうち大きい方を採用する(どちらか一方の基準を満たせば収束と
-みなすため)。収束したら、直近8件の平均値を確定レーティングとして現在選択中の盤の大きさに
-対応する履歴ファイル(<code>CurrentRatingPath()</code>、10.5節)へ結果<code>"PLACEMENT"</code>で
-追記した上で、<strong>対局自体もその場で終了する</strong>(<code>GamesPlayed</code>が0から1に
-なり、以降は通常のレート戦になる。SGFの結果欄には<code>"Void"</code>を記録し、投了・終局後解析
-(11.5節)は他の終局経路と同様に走らせる)。収束(80%)に達する前に投了・終局してしまった場合は
-この対局ではレーティングを確定させない(<code>finalizePlacementRating()</code>ラムダを呼ばない)
-ため、<code>GamesPlayed</code>は0のままとなり、次のレート戦もプレースメントとして再開される
-(複数局にまたがって収束させる想定どおりの挙動)。この「再開」の際、<code>PlacementTracker</code>
-自身(<code>Active</code>・EMA・サンプル)は前の対局の状態のまま次の対局へ引き継がれる
-(<code>beginGameWithTargetRating</code>が、直前の盤の大きさ<code>BoardSize</code>と今回の
-<code>currentBoardSize</code>が一致し、かつまだ<code>Active</code>な場合のみ
-<code>Reset()</code>を呼ばないようにしている)。盤の大きさを変えた場合や、間にカジュアル対局を
-挟んだ場合は<code>Reset()</code>され、収束率は0%から再スタートする(レーティングが盤の大きさ
-ごとに別々に記録される10.5節の設計と整合させるため)。
-HUDには通常のレーティング表示の代わりに「レーティング測定中(推定: … 収束率: …%)」を表示する
-(収束率は上記<code>ConvergenceRate()</code>を百分率にしたもので、厳密な確率的意味を持つ値では
-なく、プレースメント中の体感的な目安として表示するものである)。
-</p>
-<div class="note">
-<p>
-<strong>実装中に発見・修正したバグ: 同じ解析結果を複数回サンプリングしてしまう</strong>:
-<code>KataGoClient::TryGetAnalysisResult</code>は一度取得した解析結果を、次の
-<code>RequestAnalysis</code>が呼ばれて上書きされるまで、呼び出すたびに<code>true</code>を
-返し続ける設計になっている(8章の勝率バー表示等ではこれで問題ない。同じ値を毎フレーム
-再描画するだけのため)。しかし<code>PlacementTracker</code>への統計的なサンプリングでは、
-これにより「1手」のはずが1フレームごとに何度もサンプルとして取り込まれてしまい、実機検証で
-1手しか指していないのにサンプル数が10に達し即座に(誤って)収束する不具合が発覚した。
-<code>enterHumanToMove()</code>で<code>false</code>に戻す<code>placementSampledForCurrentTurn</code>
-フラグを追加し、1手番につき1回だけサンプリングするよう修正した。
-</p>
-</div>
-<div class="note">
-<p>
-<strong>実装中に発見・修正したバグ: 収束しても対局が最後まで打ち切られてしまう</strong>:
-当初の実装は「収束したらその場でレーティングを確定する」処理は持っていたが、確定後も対局自体は
-最後まで打ち切る設計になっており、「ある程度収束したら対局自体を終了する」という要求と
-合っていなかった。収束を検知した時点(この時点でturnStateは必ず<code>HumanToMove</code>。
-<code>RequestAnalysis(Stone::Black)</code>は<code>enterHumanToMove()</code>でのみ呼んでいるため)で
-即座に終局処理(SGF保存・対局後解析・GameOverへの遷移)まで行うよう修正した
-(<code>finalizePlacementRating()</code>ラムダに確定処理を切り出し、収束を検知した箇所から呼ぶ)。
-なお、収束(80%)に達する前に投了・終局してしまった場合にレーティングを確定させず
-<code>GamesPlayed</code>を0のまま次のレート戦もプレースメントとして再開させるのは、
-9路・13路など手数の少ない対局で信頼できるサンプルが集まる前に決着してしまうケースを想定した
-意図的な仕様であり(「収束するまで複数局かかることがある」)、バグではない。
-</p>
-</div>
-<div class="note">
-<p>
-<strong>実装中に発見・修正したバグ: 対局開始直後の数手で収束率が異常に高く出る</strong>:
-<code>ConvergenceRate()</code>の当初の実装は、サンプル数が少なくても直近ウィンドウの
-最大-最小(spread)を無条件に計算していた。サンプルが1〜数件しか無い段階ではこの幅が
-偶然小さくなりやすく(極端な場合はサンプル1件でspreadが0になる)、結果として対局開始
-直後の数手だけで収束率が100%近くまで跳ね上がって表示される不具合があった。
-<code>SampleCount &lt; kMinSamples</code>または直近ウィンドウが<code>kConvergenceWindowSize</code>
-(8件)埋まっていない間はspreadによる計算を行わず、サンプル数の到達度
-(<code>kMaxSamples</code>=60に対する割合)のみを収束率として返すよう修正した。この間は
-分母が60と大きいため、収束率が序盤だけで跳ね上がることはない。
-</p>
-</div>
-<div class="note">
-<p>
-<strong>実装中に発見・修正したバグ: 2局目になると収束率がリセットされてしまう</strong>:
-収束(80%)に達する前に対局が終わり、次のレート戦もプレースメントとして再開される場合でも、
-当初の実装は<code>beginGameWithTargetRating</code>で毎回無条件に<code>placementTracker.Reset()</code>
-を呼んでいたため、前の対局で積み上げたEMA・サンプルが対局のたびに失われ、収束率が毎回0%から
-やり直しになってしまっていた(実機検証で発覚)。<code>PlacementTracker</code>に現在追跡中の
-盤の大きさを保持する<code>BoardSize</code>フィールドを追加し、「今回もプレースメント対象」かつ
-「まだ<code>Active</code>」かつ「盤の大きさが前回と同じ」の3条件がすべて揃う場合のみ
-<code>Reset()</code>を呼ばずに前の対局の状態を引き継ぐよう修正した。盤の大きさを変えた場合は
-別のレーティング(10.5節)を測定することになるため、意図的にリセットする。
-</p>
-</div>
-<h3>11.4 実機検証: -override-config maxVisitsの効果</h3>
-<p>
-<code>gtp.cfg</code>のコメントに「全パラメータは<code>-override-config
-KEY=VALUE,KEY=VALUE,...</code>でコマンドライン上書きできる」と明記されているが、実際に
-<code>genmove</code>の探索に効くかどうかは実機で検証した。<code>time_settings 0 5 1</code>
-(本アプリの実運用と同じbyoyomi 5秒)のもとで<code>genmove</code>の応答時間を比較したところ、
-<code>maxVisits=20</code>で約0.15秒、既定の<code>maxVisits=500</code>で約0.79秒、
-極端に大きい<code>maxVisits=100000</code>で約3.0秒(5秒のbyoyomiに近づく)となり、
-<code>maxVisits</code>が小さいほど探索が早く打ち切られることを確認した。一方、
-<code>kata-analyze</code>(解析表示用、8章)は<code>maxVisits=20</code>を指定しても
-数百visitsまで報告が伸び続けることも確認しており、<code>kata-analyze</code>の解析量は
-<code>maxVisits</code>に縛られない場合がある(表示用の解析量と実際の着手決定の探索量は
-別物である点に注意)。
-</p>
-<h3>11.5 <code>KataGoClient</code>: 同一インスタンスでの再起動</h3>
-<p>
-対局ごとに強さを変えるため、対局開始のたびに<code>StartAsync</code>を呼び直す(9.6節の
-<code>startNewGame</code>も含む)。デストラクタの本体(ワーカースレッドjoin後の後始末:
-<code>quit</code>送信→プロセス終了待ち→ハンドルクローズ)を<code>ShutdownProcessIfRunning()</code>
-として切り出し、<code>StartAsync</code>の冒頭でも(既存プロセスがあれば)呼ぶことで、
-同一<code>KataGoClient</code>インスタンスを安全に「作り直せる」ようにした。あわせて
-<code>m_StartupComplete</code>等のアトミックフラグもここでリセットし、前回セッションの
-状態が残らないようにしている。
-</p>
-<h3>11.6 Human SLモデルによるアマチュア向けの強さ再現</h3>
-<p>
-11.2節の<code>maxVisits</code>線形補間は、探索回数を絞ってもKataGoの政策ネット自体の
-一手の質が高いままのため、初心者〜アマチュアが対局しても「弱いAI」だと体感しにくいという
-限界がある。KataGo公式はこの課題に対して「Human SLモデル」
-(<code>-human-model</code>起動引数、<code>humanSLProfile</code>設定)を提供している。
-これは政策ネットの代わりに人間の棋譜から学習したモデルを使い、<code>rank_20k</code>〜
-<code>rank_9d</code>のように実際の級位・段位を指定して、その棋力の人間の打ち筋(悪手も含む)を
-再現するもの(同梱の<code>gtp_human5k_example.cfg</code>参照)。導入済みのKataGo実行ファイルは
-<code>v1.16.5</code>(<code>-human-model</code>が入った<code>v1.15.0</code>以降)であることを
-実機ログ(<code>katago_stderr.log</code>)で確認済み。盤の大きさ(9路/13路/19路)を問わず、
-このHuman SLモデルを使う。11.6.4節で述べる通り、モデルファイルが未配置の場合は
-<strong>対局そのものを開始できない</strong>ようにしている(<code>maxVisits</code>のみの
-調整では級位帯の強さがほとんど差別化できないため、フォールバックとしては採用しない設計とした)。
-</p>
-<h4>11.6.1 レーティング↔段級位インデックスの変換</h4>
-<p>
-レーティングの範囲を0〜上限なしとし、段級位は30級(最弱、index 0)〜段位は上限なし
-(1段=index 30、9段=index 38、10段以降も理論上続く)として、レーティングが段級位インデックスの
-3乗に比例するようにする(<code>Main.cpp</code>の<code>RankIndexForRating</code>/
-<code>RatingForRankIndex</code>)。基準点として1段のレーティングをちょうど1000にすることで、
-<code>rating = index<sup>3</sup> / 27</code>、逆に<code>index = 3 * cbrt(rating)</code>という
-単純な式になる。
-</p>
-<pre><code>constexpr int kRankIndexForOneDan = 30; // 30級(index0)〜1級(index29)の30段階の直後が1段
-constexpr double kRatingForOneDan = 1000.0;
-
-double RankIndexForRating(double rating) { return kRankIndexForOneDan * std::cbrt(std::max(0.0, rating) / kRatingForOneDan); }
-double RatingForRankIndex(double rankIndex) { return (rankIndex * rankIndex * rankIndex) / 27.0; }</code></pre>
-<div class="note">
-<p>
-<strong>段位が上がるほど1段の重みが増す換算は較正されていない目安</strong>: 11.2節のmaxVisits
-写像と同じ立場で、実世界の段級位を保証する対応表ではなく、調整可能な目安である。
-</p>
-</div>
-<p>
-KataGoの<code>humanSLProfile</code>が実際にサポートするのは20級〜9段のみ(同梱
-<code>gtp_human5k_example.cfg</code>のコメント記載の範囲、"RANK from 20k to 9d")のため、
-<code>HumanSLProfileSuffixForRankIndex</code>はこの範囲(index 10〜38)にクランプしてから
-<code>"20k"</code>〜<code>"9d"</code>形式の文字列を作る。表示用の段級位
-(<code>DisplayRankTextForRankIndex</code>、HUDの「AI強さ(目安)」に併記)はクランプせず
-理論値をそのまま見せる。
-</p>
-<div class="note">
-<p>
-<strong>初期レーティング(0)との組み合わせによる注意点</strong>: <code>kInitialRating</code>
-(<code>Rating.h</code>)を1500から0へ変更したのは、この段級位換算で0が30級(最弱到達点)に
-ちょうど対応するようにするため。11.3節のプレースメントモードを無効化しているのも同じ理由
-(基準点変更に伴う再設計が必要なため)。
-</p>
-</div>
-<h4>11.6.2 カジュアル対局の強さ選択UI(盤上のタブ+5列2行グリッド)</h4>
-<p>
-従来の「自分のレーティングからの相対オフセット5段階」(とても弱め/弱め/おすすめ/強め/
-とても強め)は、20級〜9段(段級位インデックス10〜38、ちょうどKataGo対応範囲と一致)から
-直接選べるUIに置き換えた。盤の中央に3つの範囲タブ(「20〜11級」「10〜1級」「1〜9段」、それぞれ
-段級位インデックス[10,19]/[20,29]/[30,38]に対応)を表示し、選択中のタブの範囲を5列2行の
-ボタングリッドで表示する(20〜11級・10〜1級はちょうど10個で埋まり、1〜9段は9個のため
-最後の1マスは空ける)。<code>ChoosingCasualStrength</code>に入った時点で、現在のユーザー
-レーティングが属する範囲のタブを既定選択にする。右側縦列のボタン(<code>LayoutButtonColumn</code>)
-とは別に、盤中央基準の専用レイアウト関数(<code>LayoutCasualGroupTabs</code>/
-<code>LayoutCasualRankGrid</code>)を追加したが、<code>ButtonSpec</code>/<code>ButtonRect</code>/
-<code>DrawButton</code>/<code>IsPointInButton</code>は右側縦列と共通のものをそのまま再利用している。
-</p>
-<div class="note">
-<p>
-<strong>ボタン文字の太字・中央揃えはKurenaiEngine側の機能追加後に反映</strong>: このUIの実装時点では
-<code>KurenaiEngine2D::DrawText</code>に太字指定・厳密な文字揃え・実測幅取得のいずれも無く、
-中央揃えは<code>EstimateTextWidth</code>という概算(半角文字はfontSizeの約0.55倍、全角文字は
-約1.0倍として文字ごとに幅を積算する)に頼らざるを得なかった。この制約はKurenaiEngine本体を
-変更せず<a href="https://github.com/kurenai3110/KurenaiEngine/issues/9">KurenaiEngine側にissueを
-起票する</a>だけに留め、その後別途<code>KurenaiEngine2D::DrawText</code>に<code>bold</code>引数・
-<code>TextAlign</code>/<code>TextVerticalAlign</code>引数・<code>MeasureText</code>関数が追加された
-(KurenaiEngineコミット<code>cff50d4</code>/<code>dba28e4</code>)。KurenaiGo側はこのサブモジュール
-更新を取り込んだ後、<code>DrawButton</code>の<code>EstimateTextWidth</code>による概算中央揃えを
-削除し、ボタン中心座標をそのまま<code>DrawText(centerX, centerY, label, fontSize, r, g, b, a,
-/*bold=*/true)</code>へ渡すだけの実測ベースの中央揃え(かつ太字)に置き換えた。align/verticalAlignの
-既定値がCenter/Middleに変更されたため、既存の他のDrawText呼び出し箇所(勝率テキスト・HUD・
-着手コメンタリー・苦手分野解析)は、従来の左下基準の見た目を保つため
-<code>TextAlign::Left</code>/<code>TextVerticalAlign::Bottom</code>を明示的に指定するよう
-あわせて修正した(指定しないとテキスト位置が意図せずずれるため)。
-</p>
-</div>
-<h4>11.6.3 <code>KataGoClient</code>の起動引数拡張</h4>
-<p>
-<code>StartAsync</code>/<code>LaunchProcess</code>に<code>humanModelPath</code>・
-<code>humanSLProfile</code>を追加した。<code>humanSLProfile</code>が非空の場合のみ
-<code>-human-model "&lt;humanModelPath&gt;"</code>をコマンドラインに追加し、
-<code>-override-config</code>に<code>humanSLProfile</code>・
-<code>humanSLChosenMoveProp=1.0</code>・<code>humanSLChosenMoveIgnorePass=true</code>・
-<code>humanSLChosenMovePiklLambda=100000000</code>・<code>useLcbForSelection=false</code>・
-<code>rootNumSymmetriesToSample=2</code>・<code>chosenMoveTemperature*</code>系(いずれも同梱
-<code>gtp_human5k_example.cfg</code>の値を踏襲)を<code>maxVisits=40</code>とあわせてカンマ区切りで
-付与する。<code>humanSLProfile</code>が空文字列になる呼び出しは11.6.4節のゲーティングにより
-実際には発生しない(<code>beginGameWithTargetRating</code>は常にHuman SLプロファイルを
-組み立てる。空文字列を渡すレガシー経路自体は<code>KataGoClient</code>のAPIとして残っているが、
-<code>Main.cpp</code>側からは使われない)。
-</p>
-<h4>11.6.4 Human SLモデル未配置時は対局不可にするゲーティング</h4>
-<p>
-当初はHuman SLモデル未配置時に11.2節の<code>maxVisits</code>のみの方式へフォールバックする
-設計だったが、後述の実機検証(11.2節参照)でこのフォールバックが20級〜1級のほぼ全域で
-<code>maxVisits</code>を最小値に丸めてしまい強さ選択が実質的に機能しない不具合を発見した。
-この不具合は数値の修正で改善できるが、そもそも探索回数だけの調整では「一手ごとの質の高さ」
-自体は変わらないため、Human SLモデルが目指す人間らしい打ち筋の再現にはならない。そのため
-フォールバックという設計自体をやめ、<strong>Human SLモデルが無い場合は対局を開始できない</strong>
-仕様に変更した。
-</p>
-<pre><code>enum class TurnState
-{
-    HumanModelMissing, // Human SLモデルが未配置のため対局不可。起動時のみ判定する
-    ChoosingBoardSize,
-    ...
-};
-
-const bool humanModelAvailable = std::filesystem::exists(humanModelPath);
-TurnState turnState = humanModelAvailable ? TurnState::ChoosingBoardSize : TurnState::HumanModelMissing;</code></pre>
-<p>
-起動直後に一度だけ<code>humanModelPath</code>の存在を確認し、無ければ
-<code>TurnState::HumanModelMissing</code>から開始する。この状態では右側縦列のボタンを
-「終了」のみにし(<code>盤の大きさ/対局モードの選択ボタンを一切出さない</code>)、HUDに
-配置場所を案内するメッセージを表示する。以前あった<code>ComputeMaxVisitsForRating</code>・
-<code>kAiStrengthScalingMinRating</code>/<code>MaxRating</code>等のフォールバック専用コードは
-到達不能になったため削除した。
-</p>
-<div class="note">
-<p>
-<strong>実機検証</strong>: Human SLモデル未配置の状態(開発機の既定状態)でアプリを起動し、
-盤面上に「Human SLモデル(b18c384nbt-humanv0.bin.gz)が見つからないため対局できません。
-KataGoフォルダに配置してからアプリを起動し直してください(README参照)」というHUDメッセージが
-表示され、右側のボタン列に「終了」以外のボタンが一切表示されないことを確認した。さらに盤面上の
-交点をクリックしても石が置かれず、状態が変化しないこと(<code>katago.exe</code>プロセスも
-起動されないこと)も確認した。
-</p>
-</div>
-<div class="note">
-<p>
-<strong>実機検証</strong>: Human SLモデル本体(<code>b18c384nbt-humanv0.bin.gz</code>、約90MB超)は
-容量が大きいため開発機に常設していないが、検証のためダミーファイル(ランダムバイト列)を
-同じファイル名で配置してカジュアル対局を開始したところ、<code>katago_stderr.log</code>に
-<code>Uncaught exception: Error loading or parsing model file
-...\KataGo\b18c384nbt-humanv0.bin.gz: Error while ungzipping file, Z_DATA_ERROR. Invalid file?</code>
-という、指定したパスのファイルを実際に読み込もうとした形跡のあるエラーが記録されることを確認した
-(<code>-human-model</code>・<code>-override-config</code>のコマンドライン構文自体はKataGoに
-正しく解釈されている証拠になる)。この際KataGoプロセスは起動直後に終了するため、
-<code>KataGoClient::Exchange</code>の応答読み取りが失敗し、アプリ側は
-<code>error.log</code>に「KataGoの起動に失敗しました」と記録したうえでクラッシュせず
-処理を継続することも確認した(9章の起動失敗時のエラーハンドリングがそのまま機能している)。
-実際の学習済みHuman SLモデルでの人間らしい打ち筋そのものの検証は、本体ファイルを配置した
-うえで別途行う必要がある。
-</p>
-</div>
-<div class="note">
-<p>
-<strong>実機検証(当時のフォールバック経路。11.6.4節の変更により現在は到達不能)</strong>:
-Human SLモデル未配置時のフォールバック経路(19路・カジュアル・「1〜9段」タブの「1段」ボタン)で
-対局を開始し、KataGoが通常モデル(<code>model.bin.gz</code>)
-のみで正常に起動し、HUDに「AI強さ(目安):1000 [1段相当]」と表示されること、黒番(人間)の
-手番・<code>kata-analyze</code>による勝率バー表示が従来どおり機能することを確認した。
-また、この過程で当初の実装に2件の不具合を発見し修正した: (1) <code>RatingData::Rating</code>の
-デフォルト値が<code>kInitialRating</code>と独立に<code>1500.0</code>のままハードコードされて
-おり、新規ユーザーが常に1500からスタートしてしまっていた(<code>Rating.h</code>で
-<code>double Rating = kInitialRating;</code>に修正)。(2) <code>ChoosingCasualStrength</code>の
-右側縦列ボタン組み立てで<code>else if</code>分岐を丸ごと空にした際に条件式ごと削除してしまい、
-どの条件にも一致せず最後の<code>else</code>(通常対局中のボタン)へフォールスルーしていたため、
-強さ選択画面に「地合い表示」「着手ヒント」ボタンが誤って表示されていた(明示的な空の
-<code>else if (turnState == TurnState::ChoosingCasualStrength) { }</code>分岐を追加して修正)。
-</p>
-</div>
 </section>
 
 <section id="mistakes">
-<h2>12. 苦手分野の解析</h2>
+<h2>9. 苦手分野の解析</h2>
 <p>
-局面(序盤/中盤/終盤)ごとの悪手率を、レート戦の対局が終了するたびに自動的に集計する。
-KataGoから得られる勝率という事実ベースの情報だけで判定できる範囲に留め、「攻め/受け」
-「死活」等の意味づけ(9.5節の言語化の延長として要望はあるが優先度最低で保留中、13章参照)
-には踏み込まない。
+レート戦の対局が終了すると、その対局の全手を自動的に解析し、「序盤・中盤・終盤」ごとの悪手率を
+集計します。序盤・中盤・終盤は、その対局の総手数を単純に3等分した目安であり、布石・中盤・ヨセの
+厳密な境界を判定しているわけではありません。カジュアル対局はこの自動解析の対象外です
+(レーティングと同様)。
 </p>
-<h3>12.1 局面の3分割(序盤/中盤/終盤)</h3>
 <p>
-科学的な布石理論に基づく境界を判定する手段が無いため、単純にその対局の<strong>総手数に
-対する割合</strong>で3等分する(<code>MistakeStats.h/.cpp</code>の<code>DeterminePhase</code>、
-1/3以下が序盤、2/3以下が中盤、それ以外が終盤)。この閾値は妥当だと考えられる単純な目安で
-あり、囲碁理論上の厳密な布石・中盤・ヨセの境界ではない。
+1手あたり数百ms〜数秒かかるため、数百手の対局では完了までに数分かかることがあります。
+<strong>解析が完了するまで「新規対局」「棋譜再生」は無効化されます</strong>(HUDに
+「対局後の解析中 (42/183手)」のように進捗が表示されます)。
 </p>
-<h3>12.2 分類ロジックの共通化</h3>
 <p>
-9.5節の着手の言語化にインライン化されていた4段階判定(最善手級/やや損な手/緩着/悪手)を
-<code>ClassifyMoveQuality(deltaPercent, isBestMove)</code>として切り出し、
-<code>BuildMoveCommentary</code>と本機能の両方から呼ぶ(判定基準を2箇所に重複させない)。
-</p>
-<h3>12.3 集計のタイミング: レート戦終了時の自動解析</h3>
-<p>
-棋譜再生(9.3節)への集計フックではなく、<strong>レート戦の対局が終了した時点で、
-その対局の全手を自動的に解析</strong>して集計する(カジュアル対局は対象外)。
-<code>FinalizeGameResult</code>呼び出し直後、レート戦の場合のみ
-<code>beginPostGameAnalysis</code>が終了した対局の<code>moveHistory</code>のコピーを保持して
-状態を初期化し、以後は毎フレーム<code>advancePostGameAnalysisIfNeeded</code>が
-<code>requestReviewAnalysisFor</code>(9.4節)と同じ手順(<code>ResetBoard</code>→0手目から
-再生し直す→<code>RequestAnalysis</code>)で1手ずつ解析要求を送る。着手前後の勝率が両方
-揃った時点でその着手を分類し、<code>mistake_stats.txt</code>への重複排除キー
-(<code>"&lt;SGFファイル名&gt;:&lt;手数&gt;"</code>)がまだ無ければ集計へ加算する。
-</p>
-<h3>12.4 解析完了までのブロック</h3>
-<p>
-1手あたり数百ms〜数秒かかり、数百手の対局では完了まで数分かかり得る。ユーザーの選択により、
-<strong>解析が完了するまで「新規対局」「棋譜再生」ボタン・<code>N</code>/<code>V</code>キーを
-無効化する</strong>(<code>ButtonSpec.Enabled</code>と各キー判定の両方で
-<code>postGameAnalysisActive</code>をガードする)。これにより、自動解析中に他の経路
-(新しい対局のライブ解析、棋譜再生の解析)がKataGoの解析チャンネルを同時に使うことが
-無くなるため、複数の要求元が競合する問題を考えずに済む(この自動解析だけが唯一の
-解析要求元になる)。HUDには「対局後の解析中 (42/183手)」のように進捗を表示する。
-</p>
-<div class="note">
-<p>
-<strong>KataGo通信の失敗は解析を打ち切るのみで対局・アプリ全体を止めない</strong>:
-自動解析は補助機能であり、かつ完了までナビゲーションをブロックする設計のため、途中で
-KataGoとの通信が(何らかの理由で)失敗した場合にそのまま止まってしまうとブロックが解除
-されなくなる。そのため<code>advancePostGameAnalysisIfNeeded</code>のKataGo呼び出し全体を
-try/catchで囲み、例外時は<code>error.log</code>に記録したうえで
-<code>postGameAnalysisActive</code>をfalseに戻し、ブロックを解除する。
-</p>
-</div>
-<h3>12.5 永続化(mistake_stats.txt)</h3>
-<p>
-<code>rating_history.txt</code>と同じ「追記型ログ+読み込み時に集計・重複排除」のパターンを
-踏襲する。1行のフォーマットは
-<code>&lt;SGFファイル名&gt; &lt;手数&gt; &lt;phase&gt; &lt;quality&gt;</code>
-(例: <code>game_20260725_201055.sgf 42 Middle Loose</code>)。起動時に
-<code>LoadMistakeStats</code>が全行を読み、局面×分類ごとの手数と、集計済みキーの集合
-(<code>SeenKeys</code>)の両方を1回のスキャンで復元する(ファイル不在・パース失敗行は
-無視し例外を投げない)。
-</p>
-<h3>12.6 表示: 「苦手分野」ボタン</h3>
-<p>
-<code>TurnState::ViewingMistakeStats</code>を追加し、<code>GameOver</code>/<code>Reviewing</code>
-のボタン行に「苦手分野」ボタンを追加する(解析中でも閲覧できる。KataGoの解析チャンネルを
-使わない純粋な読み取り表示のため、12.4節のブロックの対象外)。押すと盤の代わりに、
-局面ごとの4段階の内訳・合計手数(<code>BuildMistakeStatsLines</code>)を表示し、
-もっとも「緩着+悪手」の割合が高い局面を明示する。合計手数が10未満の局面には
-「データが少なめです」と注記し、少ないサンプル数からの過信を避ける。「戻る」ボタンで
-元の状態(<code>GameOver</code>または<code>Reviewing</code>)に戻る。
+解析が完了した後(またはカジュアル対局中・棋譜再生中を含めいつでも)、<code>苦手分野</code>ボタンで
+これまでに集計した結果を確認できます。局面ごとの4段階(最善手級/やや損な手/緩着/悪手)の内訳・
+合計手数を表示し、もっとも「緩着+悪手」の割合が高い局面を明示します。合計手数が10未満の局面には
+「データが少なめです」と注記され、少ないサンプル数からの過信を避けられるようになっています。
 </p>
 </section>
 
 <section id="future">
-<h2>13. 今後の課題</h2>
+<h2>10. 未実装の機能</h2>
 <ul>
-<li>対局中の動的な強さ変更(現状KataGo起動後に強さを変える確立された方法が無いため、
-11章の実装は対局開始時の1回のみとしている)</li>
-<li><code>playoutDoublingAdvantage</code>・人間らしい打ち方(human-like SL profile等)を
-使ったより自然な弱め方(この<code>gtp.cfg</code>・このKataGoビルドでの対応状況を検証して
-いないため見送った)</li>
-<li>保存済み過去対局の遡及的な一括解析(12章の自動解析は新たに終了したレート戦のみが対象)</li>
-<li>苦手分野の推移をグラフ表示する機能(12章では集計結果のテキスト表示のみ)</li>
-<li>着差による重み付けを苦手分野の集計へ取り入れる(現状は勝率変化ベースの4段階分類のみ)</li>
-<li>レート推移のグラフ描画(<code>rating_history.txt</code>へのデータ記録自体は10章で
-実装済みだが、可視化画面は未実装)</li>
-<li>着手の意味・役割そのものの言語化(「最善手級/やや損/緩着/悪手」という勝率変化ベースの
-判定(9.5節)に加えて、その手が「地を囲う手」「相手の石を攻める手」等、意図・役割まで
-言語化する。優先度は低い)</li>
 <li>色の選択(現在は人間=黒固定)・ハンディキャップ対局</li>
-<li>過去の複数対局から選んで読み込む機能(現状は直前の対局のみ)</li>
-<li>損失グラフをクリックして該当手数へジャンプする操作(現状は表示のみ)</li>
+<li>対局中の動的なAIの強さ変更(現状は対局開始時に決めた強さのまま最後まで対局します)</li>
+<li>初期レーティング決定(プレースメント)モード(7章の通り現在いったん無効化中)</li>
+<li>レート推移や苦手分野の推移をグラフで表示する機能(現状はテキスト表示のみ)</li>
+<li>過去の複数対局から選んで棋譜を読み込む機能(現状は直前の対局のみ再生できます)</li>
+<li>着差(目数の大小)による重み付けを苦手分野の集計へ取り入れる機能</li>
+<li>着手の意味・役割そのものの言語化(「地を囲う手」「相手の石を攻める手」等、勝率変化だけでなく
+意図・役割まで踏み込んだ解説)</li>
+<li>損失グラフをクリックして該当手数へジャンプする操作</li>
 </ul>
 </section>
 
 </main>
 
-<footer>KurenaiGo &middot; docs/KurenaiGo.html</footer>
+<footer>KurenaiGo &middot; docs/KurenaiGo.html &middot; <a href="KurenaiGo_Developer.html">実装ドキュメントはこちら</a></footer>
 
 </div>
 </body>

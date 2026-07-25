@@ -69,7 +69,7 @@ namespace KurenaiGo
         // LastError() にメッセージが入る(致命的なのでMain側で表示して終了する想定)。
         // maxVisitsはgtp.cfgのmaxVisitsを-override-configでこの値に上書きする
         // (実機検証済み: genmoveの探索がこの値でおおむね頭打ちになることを確認済み。
-        // kata-analyzeの表示用解析はこの値に縛られない場合がある、docs/KurenaiGo.html参照)。
+        // kata-analyzeの表示用解析はこの値に縛られない場合がある、docs/KurenaiGo_Developer.html参照)。
         // humanSLProfileが非空の場合(例: "rank_15k")、humanModelPathを"-human-model"として
         // 追加起動し、Human SLモデル(11.6節)による人間らしい打ち筋を再現する。空文字列の場合は
         // humanModelPathを無視し、maxVisitsのみによる従来方式で起動する(Human SLモデル未配置時の

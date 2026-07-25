@@ -162,7 +162,8 @@ Build/
     rating_history_9.txt     9路レート戦のレーティング推移(実行時に生成・追記)
     mistake_stats.txt        苦手分野の解析(局面ごとの悪手率)の集計元データ(実行時に生成・追記)
 docs/
-  KurenaiGo.html            本アプリのドキュメント(盤のレイアウト・座標系・対局アーキテクチャ)
+  KurenaiGo.html            本アプリのユーザー向けドキュメント(遊び方・機能・セットアップ)
+  KurenaiGo_Developer.html  本アプリの実装ドキュメント(盤のレイアウト・座標系・対局アーキテクチャ)
 ```
 
 ## 必要環境
@@ -254,7 +255,9 @@ Build\Bin\x64\Debug\KurenaiGo.exe
 
 ## ドキュメント
 
-本アプリの盤の描画方式・座標系・対局アーキテクチャ(GTP連携・非同期処理)については
+本アプリの遊び方・機能の詳細については
 [docs/KurenaiGo.html](docs/KurenaiGo.html) を参照してください。
+盤の描画方式・座標系・対局アーキテクチャ(GTP連携・非同期処理)など実装者向けの内容は
+[docs/KurenaiGo_Developer.html](docs/KurenaiGo_Developer.html) にまとめています。
 KurenaiEngine自体のAPIリファレンスは
 [KurenaiEngine/docs/KurenaiEngine.html](KurenaiEngine/docs/KurenaiEngine.html) を参照してください。

@@ -538,7 +538,7 @@ namespace KurenaiGo
         // (kata-analyze開始直後の素の"="応答自体は問題なく、その後の空行停止のみが影響を受ける)。
         // 代わりに、通常のGTPコマンド(ここではprotocol_version)を送ると解析はただちに中断され、
         // そのコマンド自身の正常な応答が届く。この方式は複数回の実機検証で安定して動作したため、
-        // 停止には空行ではなく実コマンドを使う。詳細な検証結果はdocs/KurenaiGo.htmlを参照
+        // 停止には空行ではなく実コマンドを使う。詳細な検証結果はdocs/KurenaiGo_Developer.htmlを参照
         constexpr DWORD kAnalysisTargetMs = 600;
         constexpr DWORD kAnalysisHardCapMs = 1500;
         constexpr int kAnalysisTargetVisits = 250;
