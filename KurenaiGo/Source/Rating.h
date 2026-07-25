@@ -13,12 +13,9 @@ namespace KurenaiGo
     };
 
     // ユーザーの初期レーティング。標準的なElo初期値の慣習を流用した値であり、
-    // 実世界の段級位・棋力を表す値ではない
+    // 実世界の段級位・棋力を表す値ではない。初期レーティング決定(プレースメント)モードの
+    // Elo逆算(InvertEloForRating)の基準アンカー値としても使う
     constexpr double kInitialRating = 1500.0;
-
-    // 対戦相手(KataGo)側のレーティング。AIの強さを調整する仕組みが無いため固定の
-    // アンカー値として扱う(「KataGoの実力を1500と評価した」という事実主張ではない)
-    constexpr double kFixedOpponentRating = 1500.0;
 
     // Eloレーティングで広く使われるK係数
     constexpr double kEloK = 32.0;
@@ -38,4 +35,10 @@ namespace KurenaiGo
 
     // 標準的なElo式によるレーティング変化量を計算する
     double ComputeEloDelta(double userRating, double opponentRating, double actualScore, double kFactor);
+
+    // Eloの期待勝率式 expected = 1/(1+10^((opponentRating-rating)/400)) をratingについて
+    // 解いた式。「この期待勝率(0〜1)をちょうど出す側のレーティングはいくつか」を逆算する。
+    // 初期レーティング決定(プレースメント)モードで、対局中に観測した勝率から現在の実力を
+    // 推定するために使う。expectedScoreは0/1に近すぎると発散するため[0.01, 0.99]にクランプする
+    double InvertEloForRating(double expectedScore, double opponentRating);
 }

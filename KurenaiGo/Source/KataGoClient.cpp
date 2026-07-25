@@ -53,7 +53,11 @@ namespace KurenaiGo
         {
             m_WorkerThread.join();
         }
+        ShutdownProcessIfRunning();
+    }
 
+    void KataGoClient::ShutdownProcessIfRunning()
+    {
         if (m_ChildStdinWrite)
         {
             // quitに対する応答は待たない(プロセス終了待ちで代用する)。
@@ -83,7 +87,7 @@ namespace KurenaiGo
     }
 
     void KataGoClient::LaunchProcess(const std::filesystem::path& exePath, const std::filesystem::path& modelPath,
-        const std::filesystem::path& configPath, const std::filesystem::path& stderrLogPath)
+        const std::filesystem::path& configPath, const std::filesystem::path& stderrLogPath, int maxVisits)
     {
         SECURITY_ATTRIBUTES securityAttributes{};
         securityAttributes.nLength = sizeof(SECURITY_ATTRIBUTES);
@@ -125,7 +129,8 @@ namespace KurenaiGo
         }
 
         std::wstring commandLine = L"\"" + exePath.wstring() + L"\" gtp -model \"" + modelPath.wstring() +
-            L"\" -config \"" + configPath.wstring() + L"\"";
+            L"\" -config \"" + configPath.wstring() + L"\"" +
+            L" -override-config maxVisits=" + std::to_wstring(maxVisits);
         std::vector<wchar_t> commandLineBuffer(commandLine.begin(), commandLine.end());
         commandLineBuffer.push_back(L'\0');
 
@@ -250,18 +255,28 @@ namespace KurenaiGo
     }
 
     void KataGoClient::StartAsync(const std::filesystem::path& exePath, const std::filesystem::path& modelPath,
-        const std::filesystem::path& configPath, const std::filesystem::path& stderrLogPath, int boardSize)
+        const std::filesystem::path& configPath, const std::filesystem::path& stderrLogPath,
+        int boardSize, int maxVisits)
     {
         if (m_WorkerThread.joinable())
         {
             m_WorkerThread.join();
         }
 
-        m_WorkerThread = std::thread([this, exePath, modelPath, configPath, stderrLogPath, boardSize]()
+        // 対局ごとに強さを変えるため、すでにプロセスが起動していれば終了させてから作り直す。
+        // 前回のセッションの状態が残らないよう、フラグ類もすべてリセットする
+        ShutdownProcessIfRunning();
+        m_StartupComplete.store(false);
+        m_StartupFailed.store(false);
+        m_GenMoveReady.store(false);
+        m_FinalScoreReady.store(false);
+        m_AnalysisReady.store(false);
+
+        m_WorkerThread = std::thread([this, exePath, modelPath, configPath, stderrLogPath, boardSize, maxVisits]()
         {
             try
             {
-                LaunchProcess(exePath, modelPath, configPath, stderrLogPath);
+                LaunchProcess(exePath, modelPath, configPath, stderrLogPath, maxVisits);
                 Exchange("boardsize " + std::to_string(boardSize));
                 Exchange("clear_board");
                 Exchange("komi " + std::to_string(kKomi));

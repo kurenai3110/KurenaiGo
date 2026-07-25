@@ -138,7 +138,8 @@
     <li><a href="#analysis">8. 解析結果の可視化(勝率・地合い・着手ヒント)</a></li>
     <li><a href="#sgf">9. 棋譜の保存・再生(SGF)</a></li>
     <li><a href="#rating">10. 棋力の数値化(レーティング)</a></li>
-    <li><a href="#future">11. 今後の課題</a></li>
+    <li><a href="#strength">11. 棋力に応じたAIの強さ設定</a></li>
+    <li><a href="#future">12. 今後の課題</a></li>
   </ol>
 </nav>
 
@@ -152,8 +153,8 @@
 子プロセスとして起動しての対局(人間=黒、KataGo=白)までを実装しています。あわせて、
 <code>kata-analyze</code>による局面解析を使った勝率表示・地合い可視化・着手ヒント(8章)、
 棋譜(SGF)の自動保存・再生・再生中の解析表示と損失グラフ(9章)、レート戦/カジュアルの
-対局モード分けと棋力の数値化(レーティング、10章)も実装済みです。色の選択・
-ハンディキャップ・対局のリスタートは未実装です(11章参照)。
+対局モード分けと棋力の数値化(レーティング、10章)、レーティングに応じたAIの強さの自動調整
+(11章)も実装済みです。色の選択・ハンディキャップは未実装です(12章参照)。
 </p>
 </section>
 
@@ -295,12 +296,14 @@ falseに戻ってしまう(ホバー判定だけが効かなくなる)ことを�
 <table>
 <thead><tr><th>状態</th><th>内容</th></tr></thead>
 <tbody>
+<tr><td><code>ChoosingGameMode</code></td><td>対局モード(レート戦/カジュアル)のボタン選択待ち(10.1節・11.1節参照)</td></tr>
+<tr><td><code>ChoosingCasualStrength</code></td><td>(カジュアル選択時のみ)AIの強さの段階選択待ち(11.1節参照)</td></tr>
 <tr><td><code>EngineStarting</code></td><td>KataGo起動中。<code>KataGoClient::IsStartupComplete()</code>をポーリング</td></tr>
 <tr><td><code>HumanToMove</code></td><td>黒(人間)の手番。クリック/<code>P</code>/<code>R</code>を受け付ける</td></tr>
 <tr><td><code>AIThinking</code></td><td>白(KataGo)の<code>genmove</code>応答待ち。<code>TryGetGenMoveResult</code>をポーリング</td></tr>
 <tr><td><code>WaitingForScore</code></td><td>両者パス後、<code>final_score</code>応答待ち</td></tr>
-<tr><td><code>GameOver</code></td><td>対局終了。<code>V</code>キーで棋譜再生(<code>Reviewing</code>)へ移れる(9.3節参照)。<code>N</code>キーで新規対局(<code>HumanToMove</code>)へ戻れる(9.6節参照)</td></tr>
-<tr><td><code>Reviewing</code></td><td>棋譜再生中。<code>→</code>/<code>←</code>キーで手を進め戻しする。<code>N</code>キーで新規対局(<code>HumanToMove</code>)へ戻れる(9.6節参照)</td></tr>
+<tr><td><code>GameOver</code></td><td>対局終了。<code>V</code>キーで棋譜再生(<code>Reviewing</code>)へ移れる(9.3節参照)。<code>N</code>キーで新規対局(<code>ChoosingGameMode</code>)へ戻れる(9.6節参照)</td></tr>
+<tr><td><code>Reviewing</code></td><td>棋譜再生中。<code>→</code>/<code>←</code>キーで手を進め戻しする。<code>N</code>キーで新規対局(<code>ChoosingGameMode</code>)へ戻れる(9.6節参照)</td></tr>
 </tbody>
 </table>
 <p>
@@ -320,6 +323,22 @@ falseに戻ってしまう(ホバー判定だけが効かなくなる)ことを�
 渡すことでこれを解消している。<code>KataGoClient</code>の例外メッセージ(<code>LastError()</code>)や
 <code>std::exception::what()</code>も同様にUTF-8として扱われるため、すべての通知はこのヘルパー
 経由で表示している。
+</p>
+</div>
+<div class="note">
+<p>
+<strong>owner未指定のMessageBoxWは閉じた後のフォーカスの戻り先が不定になる(実機で検証)</strong>:
+<code>ShowMessageBoxUtf8</code>は元々すべての呼び出しで<code>owner</code>に<code>nullptr</code>を
+渡していたが、この場合ダイアログは所有者を持たない独立したトップレベルウィンドウになり、閉じた後に
+キーボードフォーカスがメインウィンドウへ確実に戻る保証が無いことを実機検証で確認した
+(<code>PostMessage</code>で送った<code>WM_KEYDOWN</code>/<code>WM_KEYUP</code>がメインウィンドウの
+ウィンドウプロシージャには届くものの、キー入力状態としては一切反映されなくなる現象として現れる)。
+11章のAI強さ設定機能の実装中、対局モード選択の直後にキー入力を受け付ける必要があるテストで発覚した。
+<code>ShowMessageBoxUtf8</code>に<code>HWND owner</code>引数を追加し、メインループ内の呼び出し箇所は
+すべて<code>renderer.GetWindowHandle()</code>を渡すよう修正した(アプリ全体の既存のダイアログにも
+同じ問題があった可能性があり、あわせて修正している)。唯一、<code>wWinMain</code>最外周の致命的
+エラーハンドラ(<code>renderer</code>自体の構築に失敗した場合にも実行され得る)だけは
+<code>renderer</code>が有効とは限らないため<code>nullptr</code>のままとしている。
 </p>
 </div>
 </section>
@@ -521,7 +540,7 @@ KataGoは1件ずつしかリクエストを処理できない設計のため、�
 (<code>KataGoClient::ToVertex</code>と同じA〜T(<code>I</code>を除く)+行番号の表記)で文中に
 添えます。この閾値はKataGoを使った解析ツールで一般的に用いられる目安を参考にした一例であり、
 手筋の正しさを厳密に判定するものではありません(死活・シチョウ・ヨセ等の詳細な分類は今後の
-課題とし、11章参照)。
+課題とし、12章参照)。
 </p>
 <p>
 言語化には着手<strong>前</strong>の局面の評価・最有力候補手も必要なため、
@@ -541,11 +560,11 @@ KataGoは1件ずつしかリクエストを処理できない設計のため、�
 <p>
 <code>GameOver</code>・<code>Reviewing</code>のどちらの状態からでも、<code>新規対局</code>
 ボタン(<code>N</code>キー)で<code>Main.cpp</code>の<code>startNewGame</code>を呼び、
-アプリを再起動せずに何度でも対局をやり直せます。<code>startNewGame</code>は10.1節の対局モード
-確認ダイアログ(<code>askGameMode</code>として関数化)を再表示したうえで、<code>board</code>
-(<code>GoBoard</code>)を空盤面へ作り直し、<code>moveHistory</code>をクリアし、
-<code>KataGoClient::ResetBoard()</code>でKataGo側の盤面も<code>clear_board</code>し、
-<code>enterHumanToMove</code>で黒番(人間)の手番から再開します。
+アプリを再起動せずに何度でも対局をやり直せます。<code>startNewGame</code>は<code>board</code>
+(<code>GoBoard</code>)を空盤面へ作り直し、<code>moveHistory</code>をクリアしたうえで、
+<code>TurnState::ChoosingGameMode</code>(10.1節の対局モード選択)へ戻します。以降は初回起動時と
+同じ経路(モード選択→(カジュアルのみ)強さ選択→KataGo起動)を通って黒番(人間)の手番から
+再開します(11.1節参照。対局ごとに強さを変えるため、新規対局のたびにKataGoを起動し直す)。
 </p>
 <p>
 <code>lastSavedGamePath</code>・直前の<code>reviewRecord</code>はあえてクリアしません。次の対局が
@@ -574,37 +593,40 @@ KataGoは1件ずつしかリクエストを処理できない設計のため、�
 <h2>10. 棋力の数値化(レーティング)</h2>
 <p>
 <code>KurenaiGo::Rating</code>(<code>Source/Rating.h/.cpp</code>)は、対局結果からユーザーの
-レーティング(棋力の数値化)を計算・永続化する。KataGo側の強さを調整する仕組みはまだ無く
-(12章参照)、常に一定の強さの相手として対局する前提のため、標準的なElo式を使い
-「固定強度の相手に対する、自分自身の対局結果の推移」を数値化する。
+レーティング(棋力の数値化)を計算・永続化する。標準的なElo式を使い、対局相手(KataGo)の
+レーティングとの相対評価として計算する。11章の通り、レート戦ではAIの強さ自体をこの
+ユーザーレーティングに合わせて毎回調整するため、Elo式の<code>opponentRating</code>には
+固定値ではなく「その対局で目標とした強さ(レーティング換算)」を渡す。
 </p>
 <pre><code>expected = 1 / (1 + 10^((opponentRating - userRating) / 400))
 newUserRating = userRating + K * (actualScore - expected)</code></pre>
 <p>
-<code>opponentRating</code>(AI側)・ユーザーの初期値はいずれも<code>kFixedOpponentRating</code>/
-<code>kInitialRating</code> = 1500(初期未評価プレイヤーの標準Elo初期値という一般的な慣習を
-流用した固定アンカー値)、<code>K</code>係数は<code>kEloK</code> = 32(Eloで広く使われる一般的な値)。
+ユーザーの初期値は<code>kInitialRating</code> = 1500(初期未評価プレイヤーの標準Elo初期値という
+一般的な慣習を流用した値。11章のプレースメントモードの基準アンカー値としても使う)、
+<code>K</code>係数は<code>kEloK</code> = 32(Eloで広く使われる一般的な値)。
 <code>actualScore</code>は勝敗のみ(1.0=勝ち/0.0=負け/0.5=持碁)で、目差による重み付けは
 行わない(標準Elo外の独自ルールになるため採用していない)。
 </p>
 <div class="note">
 <p>
-<strong>実世界の段級位を表す値ではない</strong>: このレーティングは、KataGoの実力を
-「1500」と評価したという事実に基づく主張ではない。AIの強さを調整する機能が無いため、
-便宜上の固定アンカー値として1500を採用しているだけであり、あくまで同じ相手との対局結果の
-推移を追う指標である。
+<strong>実世界の段級位を表す値ではない</strong>: レート戦は常にAIの強さをユーザー自身の
+レーティングへ合わせにいく設計(11章)のため、Elo式の期待勝率は理論上常に0.5に近づき、
+勝敗によるレーティング変動は概ね<code>±K/2</code>(≒16点)相当になる。このレーティングは
+「その時点で自分と互角になるよう調整された相手に対する、勝ち越し・負け越しの推移」を
+数値化したものであり、KataGoや自分自身の実力を客観的な段級位で評価したものではない。
 </p>
 </div>
 <h3>10.1 対局モード(レート戦/カジュアル)</h3>
 <p>
-「レート戦として対局しますか?」の確認(<code>MB_YESNO</code>の<code>ShowMessageBoxUtf8</code>)は
-<code>askGameMode</code>という関数に切り出してあり、起動直後(<code>kataGo.StartAsync(...)</code>
-呼び出し直後・メインループに入る前)と、9.6節の<code>startNewGame</code>(新規対局を始めるたび)の
-両方で呼ばれる。<code>StartAsync</code>は専用ワーカースレッドで動く非同期処理のため、起動直後の
-確認はKataGoの起動完了(OpenCL初回チューニング等で数十秒かかることがある)を待たせずに表示できる。
-選択結果は<code>GameMode::Ranked</code>/<code>GameMode::Casual</code>として対局中保持され、
-盤下のHUDに常時表示する。カジュアルを選んだ場合、SGFの保存(9章)は今まで通り行うが、
-レーティングの更新・履歴への追記は一切行わない。
+対局モードの選択は、当初<code>MB_YESNO</code>の<code>ShowMessageBoxUtf8</code>によるモーダル
+ダイアログとして実装していたが、11章のカジュアル強さ選択(5段階)を追加するにあたり、
+既存の盤下ボタン行(<code>ButtonSpec</code>/<code>DrawButton</code>)による選択に統一した
+(モーダルダイアログを使い続ける理由が無くなったため。<code>TurnState::ChoosingGameMode</code>で
+「レート戦」/「カジュアル」の2択を、カジュアルを選んだ場合のみ続けて
+<code>TurnState::ChoosingCasualStrength</code>で強さの5段階を選ぶ)。選択結果は
+<code>GameMode::Ranked</code>/<code>GameMode::Casual</code>として対局中保持され、盤下のHUDに
+常時表示する。カジュアルを選んだ場合、SGFの保存(9章)は今まで通り行うが、レーティングの
+更新・履歴への追記は一切行わない。
 </p>
 <h3>10.2 対局結果文字列からの勝敗判定</h3>
 <p>
@@ -622,37 +644,136 @@ newUserRating = userRating + K * (actualScore - expected)</code></pre>
 <code>ResolveAppDataPath</code>でexeと同じフォルダに解決)。1行のフォーマットは
 <code>&lt;YYYYMMDD_HHMMSS&gt; &lt;この対局後のレーティング&gt; &lt;対局結果文字列&gt;</code>
 (<code>BuildGameFileName</code>と同じ<code>put_time</code>呼び出しを流用したタイムスタンプ)。
-起動時は全行を読み、パースできた行数を対局数、最後の行の値を現在のレーティングとして復元する
-(<code>LoadRating</code>、ファイル不在・全行パース失敗時は初期値にフォールバックし例外は
-投げない)。今回のパスでは推移の記録のみを行い、グラフ等での可視化(9.4節の損失グラフに相当する
-もの)は未実装(11章参照)。
+通常の対局結果文字列(<code>"W+R"</code>等)に加えて、11.3節の初期レーティング決定
+(プレースメント)が収束した行は結果欄が<code>"PLACEMENT"</code>になる(通常の対局結果とは
+異なる由来であることが履歴から分かるようにするため)。起動時は全行を読み、パースできた行数を
+対局数、最後の行の値を現在のレーティングとして復元する(<code>LoadRating</code>、ファイル
+不在・全行パース失敗時は初期値にフォールバックし例外は投げない)。今回のパスでは推移の記録の
+みを行い、グラフ等での可視化(9.4節の損失グラフに相当するもの)は未実装(12章参照)。
 </p>
-<h3>10.4 ダイアログのフォーカスに関する既知の癖(実機で検証)</h3>
+</section>
+
+<section id="strength">
+<h2>11. 棋力に応じたAIの強さ設定</h2>
+<p>
+レート戦・カジュアルいずれの対局でも、ユーザーが指定した(あるいはレート戦なら自動計算した)
+目標レーティングに応じてKataGoの探索の深さ(<code>maxVisits</code>)を調整し、対局開始時に
+その強さでKataGoを起動する。
+</p>
+<h3>11.1 対局開始前に強さを確定し、強さが決まってからKataGoを起動する</h3>
+<p>
+M5時点では「体感の起動待ち時間を減らす」ため、<code>kataGo.StartAsync(...)</code>を呼んだ
+直後にモード確認ダイアログを表示し、KataGoの起動完了を待たずに済ませていた。しかし本機能では
+強さ(<code>maxVisits</code>)を起動時のコマンドライン引数としてしか指定できない
+(11.4節参照)ため、強さが決まる前にKataGoを起動してしまうと意味が無い。そのため
+<strong>モード選択→(カジュアルのみ)強さ選択→KataGo起動</strong>の順に変更した
+(体感の起動待ち時間は増えるが、正しい強さで起動するための必須の順序である)。
+</p>
+<p>
+<code>TurnState</code>に<code>ChoosingGameMode</code>(「レート戦」/「カジュアル」の2択、
+盤下ボタン)・<code>ChoosingCasualStrength</code>(カジュアル選択時のみ、強さ5段階の選択、
+盤下ボタン)を追加した。強さが確定すると<code>beginGameWithTargetRating(targetRating)</code>
+(<code>Main.cpp</code>)が<code>ComputeMaxVisitsForRating</code>で<code>maxVisits</code>を求め、
+<code>kataGo.StartAsync(...)</code>を呼んで<code>TurnState::EngineStarting</code>へ遷移する
+(以降は既存の起動待ちポーリングをそのまま使う)。<code>startNewGame</code>(9.6節、新規対局)は
+盤面・着手履歴をリセットして<code>ChoosingGameMode</code>へ戻すだけの処理に簡略化され、
+初回起動時のセットアップと新規対局時のセットアップが同じ経路を通るようになった。
+</p>
+<h3>11.2 レーティング→強さ(maxVisits)の写像</h3>
+<pre><code>constexpr int kMinAiVisits = 20;    // 弱め
+constexpr int kMaxAiVisits = 500;   // gtp.cfgの元の既定値をそのまま上限に使う
+constexpr double kAiStrengthScalingMinRating = 1000.0; // これ以下はkMinAiVisits
+constexpr double kAiStrengthScalingMaxRating = 2000.0; // これ以上はkMaxAiVisits</code></pre>
+<p>
+目標レーティングをこの範囲で線形補間して<code>maxVisits</code>を求める
+(<code>ComputeMaxVisitsForRating</code>、<code>Main.cpp</code>)。レート戦の目標レーティングは
+常に<code>userRating.Rating</code>(自分の現在のレーティングと互角の相手にする設計)、
+カジュアルは5段階のボタン(とても弱め/弱め/おすすめ/強め/とても強め、おすすめ以外は
+自分のレーティングから±200/±400したうえで上記範囲にクランプした値)から選ぶ。
+</p>
 <div class="note">
 <p>
-<strong>owner未指定のMessageBoxWは閉じた後のフォーカスの戻り先が不定になる</strong>:
-本アプリの<code>ShowMessageBoxUtf8</code>は元々すべての呼び出しで<code>owner</code>に
-<code>nullptr</code>を渡していたが、この場合ダイアログは所有者を持たない独立したトップレベル
-ウィンドウになり、ダイアログを閉じた後にキーボードフォーカスがメインウィンドウへ確実に
-戻る保証が無いことを実機検証で確認した(<code>PostMessage</code>で送った
-<code>WM_KEYDOWN</code>/<code>WM_KEYUP</code>がメインウィンドウのウィンドウプロシージャには
-届くものの、キー入力状態としては一切反映されなくなる現象として現れる)。対局モード確認
-ダイアログの直後にキー入力(投了等)を受け付ける必要があるため、この節の実装にあたって
-<code>ShowMessageBoxUtf8</code>に<code>HWND owner</code>引数を追加し、メインループ内の
-呼び出し箇所はすべて<code>renderer.GetWindowHandle()</code>を渡すよう修正した(アプリ全体の
-既存のダイアログにも同じ問題があった可能性があり、あわせて修正している)。唯一、
-<code>wWinMain</code>最外周の致命的エラーハンドラ(<code>renderer</code>自体の構築に
-失敗した場合にも実行され得る)だけは<code>renderer</code>が有効とは限らないため
-<code>nullptr</code>のままとしている。
+<strong><code>maxVisits</code>と実際の強さの対応は較正されていない目安</strong>: 探索visits数と
+対局相手としての実際の強さの対応関係は、ハードウェア・局面の複雑さ・ネットワークに依存し
+普遍的な換算式は存在しない。このため上記の範囲・写像は「妥当だと考えられる調整可能な目安」で
+あり、科学的に較正された対応表ではない(10章のレーティング自体が実世界の段級位を表さないのと
+同じ立場)。
 </p>
 </div>
+<h3>11.3 初期レーティング決定(プレースメント)モード</h3>
+<p>
+対局回数0(<code>userRating.GamesPlayed == 0</code>)のままレート戦を始めた場合のみ発動する。
+強さの決め方自体は11.2節と同じ(この時点では<code>userRating.Rating</code>がまだ既定値の1500の
+ため、結果的に1500相当の強さで対局する)。特別なのは、対局<strong>中</strong>にレーティング
+推定値を追跡し、収束したら対局の結果を待たずにその時点で確定する点である。
+</p>
+<p>
+黒(人間)の手番になるたびにすでに<code>kata-analyze</code>で取得している
+<code>WinrateForColorToMove</code>(黒視点勝率、8章)を、Eloの期待勝率式の逆算に使う。
+</p>
+<pre><code>// expected = 1/(1+10^((opponentRating-rating)/400)) をratingについて解いた式
+double InvertEloForRating(double expectedScore, double opponentRating);</code></pre>
+<p>
+<code>Rating.h/.cpp</code>に<code>ComputeEloDelta</code>と対になる関数として追加した。
+<code>Main.cpp</code>の<code>PlacementTracker</code>構造体が、手番ごとの勝率を指数移動平均
+(EMA、重み0.15)へ取り込み、<code>InvertEloForRating</code>で瞬間推定レーティングを求めて
+直近8件の履歴を保持する。サンプル数が10以上になったら、直近8件の最大-最小が15点未満、
+または総サンプル数が60に達した時点で「収束」とみなし、直近8件の平均値を確定レーティングと
+して<code>rating_history.txt</code>へ結果<code>"PLACEMENT"</code>で追記する
+(<code>GamesPlayed</code>が0から1になり、以降は通常のレート戦になる)。収束するまでは
+現在進行中の対局をそのまま続行し、収束後にその対局が終了しても(すでにこのモードとしての
+決着がついているため)通常の終局時Elo更新は行わない(<code>FinalizeGameResult</code>の
+<code>isPlacementGame</code>引数で分岐、二重計上を避ける)。収束せずに対局が終わった場合は
+次の新規対局も引き続きプレースメントになる(複数局にまたがって収束させる想定どおりの挙動)。
+HUDには通常のレーティング表示の代わりに「レーティング測定中(推定: …)」を表示する。
+</p>
+<div class="note">
+<p>
+<strong>実装中に発見・修正したバグ: 同じ解析結果を複数回サンプリングしてしまう</strong>:
+<code>KataGoClient::TryGetAnalysisResult</code>は一度取得した解析結果を、次の
+<code>RequestAnalysis</code>が呼ばれて上書きされるまで、呼び出すたびに<code>true</code>を
+返し続ける設計になっている(8章の勝率バー表示等ではこれで問題ない。同じ値を毎フレーム
+再描画するだけのため)。しかし<code>PlacementTracker</code>への統計的なサンプリングでは、
+これにより「1手」のはずが1フレームごとに何度もサンプルとして取り込まれてしまい、実機検証で
+1手しか指していないのにサンプル数が10に達し即座に(誤って)収束する不具合が発覚した。
+<code>enterHumanToMove()</code>で<code>false</code>に戻す<code>placementSampledForCurrentTurn</code>
+フラグを追加し、1手番につき1回だけサンプリングするよう修正した。
+</p>
+</div>
+<h3>11.4 実機検証: -override-config maxVisitsの効果</h3>
+<p>
+<code>gtp.cfg</code>のコメントに「全パラメータは<code>-override-config
+KEY=VALUE,KEY=VALUE,...</code>でコマンドライン上書きできる」と明記されているが、実際に
+<code>genmove</code>の探索に効くかどうかは実機で検証した。<code>time_settings 0 5 1</code>
+(本アプリの実運用と同じbyoyomi 5秒)のもとで<code>genmove</code>の応答時間を比較したところ、
+<code>maxVisits=20</code>で約0.15秒、既定の<code>maxVisits=500</code>で約0.79秒、
+極端に大きい<code>maxVisits=100000</code>で約3.0秒(5秒のbyoyomiに近づく)となり、
+<code>maxVisits</code>が小さいほど探索が早く打ち切られることを確認した。一方、
+<code>kata-analyze</code>(解析表示用、8章)は<code>maxVisits=20</code>を指定しても
+数百visitsまで報告が伸び続けることも確認しており、<code>kata-analyze</code>の解析量は
+<code>maxVisits</code>に縛られない場合がある(表示用の解析量と実際の着手決定の探索量は
+別物である点に注意)。
+</p>
+<h3>11.5 <code>KataGoClient</code>: 同一インスタンスでの再起動</h3>
+<p>
+対局ごとに強さを変えるため、対局開始のたびに<code>StartAsync</code>を呼び直す(9.6節の
+<code>startNewGame</code>も含む)。デストラクタの本体(ワーカースレッドjoin後の後始末:
+<code>quit</code>送信→プロセス終了待ち→ハンドルクローズ)を<code>ShutdownProcessIfRunning()</code>
+として切り出し、<code>StartAsync</code>の冒頭でも(既存プロセスがあれば)呼ぶことで、
+同一<code>KataGoClient</code>インスタンスを安全に「作り直せる」ようにした。あわせて
+<code>m_StartupComplete</code>等のアトミックフラグもここでリセットし、前回セッションの
+状態が残らないようにしている。
+</p>
 </section>
 
 <section id="future">
-<h2>11. 今後の課題</h2>
+<h2>12. 今後の課題</h2>
 <ul>
-<li>棋力に応じたAIの強さ設定(レーティング値を使って<code>kata-analyze</code>や
-<code>genmove</code>の設定を変える仕組み)</li>
+<li>対局中の動的な強さ変更(現状KataGo起動後に強さを変える確立された方法が無いため、
+11章の実装は対局開始時の1回のみとしている)</li>
+<li><code>playoutDoublingAdvantage</code>・人間らしい打ち方(human-like SL profile等)を
+使ったより自然な弱め方(この<code>gtp.cfg</code>・このKataGoビルドでの対応状況を検証して
+いないため見送った)</li>
 <li>着差による重み付け・複数対局を跨いだ苦手分野の解析(9.5節の悪手判定ロジックを
 土台にする想定)</li>
 <li>レート推移のグラフ描画(<code>rating_history.txt</code>へのデータ記録自体は10章で

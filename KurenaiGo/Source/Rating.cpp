@@ -90,4 +90,10 @@ namespace KurenaiGo
         const double expected = 1.0 / (1.0 + std::pow(10.0, (opponentRating - userRating) / 400.0));
         return kFactor * (actualScore - expected);
     }
+
+    double InvertEloForRating(double expectedScore, double opponentRating)
+    {
+        const double clamped = (std::min)(0.99, (std::max)(0.01, expectedScore));
+        return opponentRating - 400.0 * std::log10(1.0 / clamped - 1.0);
+    }
 }

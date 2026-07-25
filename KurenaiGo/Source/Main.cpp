@@ -525,7 +525,9 @@ namespace
     // 対局の進行状態
     enum class TurnState
     {
-        EngineStarting, // KataGo起動中(OpenCL初回チューニング等で数十秒かかることがある)
+        ChoosingGameMode,       // レート戦/カジュアルのボタン選択待ち(対局開始前)
+        ChoosingCasualStrength, // (カジュアル選択時のみ)AIの強さの段階選択待ち
+        EngineStarting, // KataGo起動中(強さ確定後に起動するため、対局開始のたびに発生する)
         HumanToMove,     // 黒(人間)の手番
         AIThinking,      // 白(KataGo)がgenmove応答待ち
         WaitingForScore, // 両者パス後、final_score応答待ち
@@ -540,12 +542,137 @@ namespace
         Casual, // カジュアル。SGF保存は行うがレーティングには影響しない
     };
 
+    // レーティング(目安)→AIの強さ(maxVisits、10章参照)の写像。visits数と実際の対局相手としての
+    // 強さの対応関係はハードウェア・局面・ネットワークに依存し普遍的な換算式は存在しないため、
+    // これは調整可能な単純な目安であり科学的に較正された対応表ではない
+    constexpr int kMinAiVisits = 20;    // 弱め(浅い探索)
+    constexpr int kMaxAiVisits = 500;   // gtp.cfgの元の既定値をそのまま上限に使う
+    constexpr double kAiStrengthScalingMinRating = 1000.0; // これ以下はkMinAiVisits
+    constexpr double kAiStrengthScalingMaxRating = 2000.0; // これ以上はkMaxAiVisits
+
+    int ComputeMaxVisitsForRating(double targetRating)
+    {
+        if (targetRating <= kAiStrengthScalingMinRating)
+        {
+            return kMinAiVisits;
+        }
+        if (targetRating >= kAiStrengthScalingMaxRating)
+        {
+            return kMaxAiVisits;
+        }
+        const double t = (targetRating - kAiStrengthScalingMinRating) /
+            (kAiStrengthScalingMaxRating - kAiStrengthScalingMinRating);
+        return static_cast<int>(std::lround(kMinAiVisits + t * (kMaxAiVisits - kMinAiVisits)));
+    }
+
+    // 表示・保存するAIの目標レーティングを、実際に強さとして反映できる範囲にクランプする
+    // (この範囲を超えてもComputeMaxVisitsForRatingの結果は変わらないため、表示上の
+    // 誤解(実際より強い/弱いAIだと思わせる)を避ける)
+    double ClampAiTargetRating(double rating)
+    {
+        return (std::max)(kAiStrengthScalingMinRating, (std::min)(kAiStrengthScalingMaxRating, rating));
+    }
+
+    // カジュアル対局の強さ段階選択で使うオフセット(おすすめ=自分のレーティングからの相対値)。
+    // ComputeMaxVisitsForRatingの写像と同様、調整可能な目安の一例
+    constexpr double kCasualStrengthOffsets[] = { -400.0, -200.0, 0.0, 200.0, 400.0 };
+
+    // 初期レーティング決定(プレースメント)モード: 対局回数0のままレート戦を始めた場合のみ
+    // 発動する。黒(人間)の手番ごとに得られるkata-analyzeの勝率(WinrateForColorToMove)を
+    // Eloの期待勝率式の逆算(InvertEloForRating)に通し、「この勝率を出す人間側のレーティングは
+    // いくつか」を指数移動平均で追跡する。直近の推定値が安定したら収束とみなし、対局の結果を
+    // 待たずにその時点でrating_history.txtへ確定値を記録する(対局自体はそのまま続行する)。
+    // この収束基準(EMAの重み・ウィンドウ幅・しきい値・上限サンプル数)は事前の科学的較正を
+    // 行ったものではなく、妥当だと考えられる初期値である
+    struct PlacementTracker
+    {
+        static constexpr double kEmaAlpha = 0.15;
+        static constexpr int kConvergenceWindowSize = 8;
+        static constexpr double kConvergenceThreshold = 15.0; // レーティング換算でこの幅未満なら収束
+        static constexpr int kMinSamples = 10;
+        static constexpr int kMaxSamples = 60; // 収束しなくても打ち切る上限(無限に終わらないため)
+
+        bool Active = false;
+        int SampleCount = 0;
+        double RunningWinrateEma = 0.5;
+        std::vector<double> RecentEstimates; // 直近kConvergenceWindowSize件の推定レーティング
+
+        void Reset(bool active)
+        {
+            Active = active;
+            SampleCount = 0;
+            RunningWinrateEma = 0.5;
+            RecentEstimates.clear();
+        }
+
+        // 黒視点の勝率を1サンプル取り込む。収束したらtrueを返す(その場合CurrentEstimate()が確定値)
+        bool Update(float blackWinrate)
+        {
+            ++SampleCount;
+            RunningWinrateEma = (SampleCount == 1)
+                ? static_cast<double>(blackWinrate)
+                : RunningWinrateEma * (1.0 - kEmaAlpha) + static_cast<double>(blackWinrate) * kEmaAlpha;
+
+            const double estimate = InvertEloForRating(RunningWinrateEma, kInitialRating);
+            RecentEstimates.push_back(estimate);
+            if (static_cast<int>(RecentEstimates.size()) > kConvergenceWindowSize)
+            {
+                RecentEstimates.erase(RecentEstimates.begin());
+            }
+
+            if (SampleCount < kMinSamples)
+            {
+                return false;
+            }
+            if (SampleCount >= kMaxSamples)
+            {
+                return true;
+            }
+            if (static_cast<int>(RecentEstimates.size()) < kConvergenceWindowSize)
+            {
+                return false;
+            }
+            const double maxV = *std::max_element(RecentEstimates.begin(), RecentEstimates.end());
+            const double minV = *std::min_element(RecentEstimates.begin(), RecentEstimates.end());
+            return (maxV - minV) < kConvergenceThreshold;
+        }
+
+        // 収束時点の確定推定値(直近ウィンドウの平均)
+        double CurrentEstimate() const
+        {
+            if (RecentEstimates.empty())
+            {
+                return kInitialRating;
+            }
+            double sum = 0.0;
+            for (double v : RecentEstimates)
+            {
+                sum += v;
+            }
+            return sum / static_cast<double>(RecentEstimates.size());
+        }
+    };
+
     // 盤下のHUDに表示する手番状態・アゲハマ数のテキストを組み立てる。reviewMoveIndex/
-    // reviewTotalMoves/reviewResultはturnState==Reviewingの場合のみ使う
+    // reviewTotalMoves/reviewResultはturnState==Reviewingの場合のみ使う。aiTargetRatingは
+    // 今回の対局でAIが狙っている強さ(目安レーティング)。isPlacementActiveがtrueの間は
+    // userRatingの代わりにplacementEstimateを「測定中」の値として表示する
     std::wstring BuildStatusText(TurnState turnState, const GoBoard& board,
         int reviewMoveIndex, int reviewTotalMoves, const std::string& reviewResult,
-        double userRating, GameMode gameMode)
+        double userRating, GameMode gameMode, double aiTargetRating,
+        bool isPlacementActive, double placementEstimate)
     {
+        if (turnState == TurnState::ChoosingGameMode)
+        {
+            return L"対局モードを選んでください(レート戦: 今のレーティングと互角のAIと対局/"
+                L"カジュアル: 強さを自分で選べます)";
+        }
+        if (turnState == TurnState::ChoosingCasualStrength)
+        {
+            return L"カジュアル対局の強さを選んでください(おすすめ: " +
+                std::to_wstring(std::lround(userRating)) + L")";
+        }
+
         std::wstring text;
         switch (turnState)
         {
@@ -562,29 +689,40 @@ namespace
                 text += L"  結果: " + Utf8ToWide(reviewResult);
             }
             break;
+        default: break;
         }
         text += L"   アゲハマ 黒:" + std::to_wstring(board.CapturesBy(Stone::Black)) +
             L" 白:" + std::to_wstring(board.CapturesBy(Stone::White));
-        text += L"   レーティング:" + std::to_wstring(std::lround(userRating)) +
-            L" [" + (gameMode == GameMode::Ranked ? L"レート戦" : L"カジュアル") + L"]";
+        if (isPlacementActive)
+        {
+            text += L"   レーティング測定中(推定:" + std::to_wstring(std::lround(placementEstimate)) + L")";
+        }
+        else
+        {
+            text += L"   レーティング:" + std::to_wstring(std::lround(userRating)) +
+                L" [" + (gameMode == GameMode::Ranked ? L"レート戦" : L"カジュアル") + L"]";
+        }
+        text += L"   AI強さ(目安):" + std::to_wstring(std::lround(aiTargetRating));
         return text;
     }
 
     // 盤の下マージンにHUDテキストを描画する
     void DrawHud(KurenaiEngine2D& renderer, const BoardLayout& layout, TurnState turnState, const GoBoard& board,
         int reviewMoveIndex, int reviewTotalMoves, const std::string& reviewResult,
-        double userRating, GameMode gameMode)
+        double userRating, GameMode gameMode, double aiTargetRating,
+        bool isPlacementActive, double placementEstimate)
     {
         const float hudX = layout.CenterX - layout.GridExtent * 0.5f;
         const float bottomMarginCenterY = (layout.CenterY - layout.BoardExtent * 0.5f) * 0.5f;
         const float hudY = bottomMarginCenterY - kHudFontSize * 0.5f;
         renderer.DrawText(hudX, hudY,
-            BuildStatusText(turnState, board, reviewMoveIndex, reviewTotalMoves, reviewResult, userRating, gameMode),
+            BuildStatusText(turnState, board, reviewMoveIndex, reviewTotalMoves, reviewResult,
+                userRating, gameMode, aiTargetRating, isPlacementActive, placementEstimate),
             kHudFontSize, kHudColorR, kHudColorG, kHudColorB, 1.0f);
     }
 
     // ボタン1個の識別子。着手以外の操作(パス・投了・地合い表示切替・着手ヒント表示切替・
-    // 棋譜再生・新規対局・終了)にそれぞれ対応する
+    // 棋譜再生・新規対局・終了・対局モード/強さ選択)にそれぞれ対応する
     enum class ButtonId
     {
         ToggleTerritory,
@@ -596,6 +734,13 @@ namespace
         ReviewNext,
         NewGame,
         Quit,
+        ChooseRanked,
+        ChooseCasual,
+        StrengthMuchWeaker,
+        StrengthWeaker,
+        StrengthRecommended,
+        StrengthStronger,
+        StrengthMuchStronger,
     };
 
     // 1フレーム分のボタン行を組み立てる際の仕様(ラベル・有効/無効・トグルON状態)
@@ -757,14 +902,19 @@ namespace
     // 標準Elo式(9.6節参照)でuserRatingを更新しrating_history.txtへ1行追記する。カジュアルの
     // 場合はレーティング関連の処理を丸ごとスキップする。結果文字列が未知の形式で勝敗を
     // 判定できない場合もレーティングは更新せず、error.logに記録するのみとする(存在しない
-    // データを捏造しない)
+    // データを捏造しない)。opponentRatingForThisGameは今回のAIの目標強さ(=対局開始時点の
+    // userRating.Rating)で、Elo更新の相手レーティングとして使う(AIは常に自分と互角の相手に
+    // 調整しているため、固定の1500ではなくこの値を使う、10章参照)。isPlacementGameがtrueの
+    // 場合、対局中にPlacementTrackerがすでにレーティングを確定させているため、終局時の
+    // 通常のElo更新は行わない(二重計上を避ける)
     std::filesystem::path FinalizeGameResult(const std::filesystem::path& gamesDir,
         const std::filesystem::path& ratingPath, const std::vector<SgfMove>& moves,
-        const std::string& result, GameMode gameMode, RatingData& userRating)
+        const std::string& result, GameMode gameMode, double opponentRatingForThisGame,
+        bool isPlacementGame, RatingData& userRating)
     {
         const std::filesystem::path savedPath = SaveGameRecordSafely(gamesDir, moves, result);
 
-        if (gameMode != GameMode::Ranked)
+        if (gameMode != GameMode::Ranked || isPlacementGame)
         {
             return savedPath;
         }
@@ -777,7 +927,7 @@ namespace
             return savedPath;
         }
 
-        userRating.Rating += ComputeEloDelta(userRating.Rating, kFixedOpponentRating, actualScore, kEloK);
+        userRating.Rating += ComputeEloDelta(userRating.Rating, opponentRatingForThisGame, actualScore, kEloK);
         userRating.GamesPlayed += 1;
 
         try
@@ -902,7 +1052,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 
         GoBoard board(kBoardLines);
         KataGoClient kataGo;
-        TurnState turnState = TurnState::EngineStarting;
+        TurnState turnState = TurnState::ChoosingGameMode;
 
         // 対局中の着手・パスの記録。対局終了時にSGFへ保存する
         std::vector<SgfMove> moveHistory;
@@ -910,9 +1060,20 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         std::filesystem::path lastSavedGamePath;
 
         // 棋力の数値化(レーティング)。rating_history.txtから現在値を復元する。
-        // 対局モード(レート戦/カジュアル)はKataGo起動直後に1回だけ確認する(下記)
+        // 対局モード(レート戦/カジュアル)・AIの強さは対局開始前(ChoosingGameMode/
+        // ChoosingCasualStrength)にそのつど選ぶ(下記)
         RatingData userRating = LoadRating(ratingPath);
         GameMode currentGameMode = GameMode::Casual;
+        // 今回の対局でAIが狙っている強さ(目安レーティング)。レート戦なら常にuserRating.Rating
+        // (五分の相手)、カジュアルなら段階選択で選んだ値
+        double currentAiTargetRating = kInitialRating;
+        // 対局回数0のままレート戦を始めた場合のみtrue(対局開始時に固定し、対局終了まで変えない)。
+        // trueの間はFinalizeGameResultで通常のElo更新をスキップする(PlacementTrackerが対局中に
+        // 収束した時点ですでにレーティングを確定させているため)
+        bool isCurrentGamePlacement = false;
+        // 初期レーティング決定(プレースメント)の追跡状態。isCurrentGamePlacementの対局中のみ
+        // Active。収束するとActiveがfalseになりHUD表示が通常のレーティング表示へ切り替わる
+        PlacementTracker placementTracker;
 
         // 棋譜再生(Reviewing)の状態
         SgfGameRecord reviewRecord;
@@ -935,12 +1096,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         // 解析(kata-analyze)の最新結果。対局中の勝率表示・地合い可視化・着手ヒントが共通で使う
         KataGoAnalysisResult latestAnalysis;
         bool hasAnalysis = false;
+        // TryGetAnalysisResultは同じ結果を読み出すたびtrueを返し続ける(呼び出し側で状態を
+        // 消費する設計ではない)ため、PlacementTrackerへは1手番につき1回だけサンプルを渡すよう
+        // この手番でサンプル済みかどうかをここで別途追跡する(enterHumanToMoveでfalseに戻す)
+        bool placementSampledForCurrentTurn = false;
 
         // HumanToMoveへ遷移すると同時に、その局面の解析(黒=人間視点)を要求する
         const auto enterHumanToMove = [&]()
         {
             turnState = TurnState::HumanToMove;
             hasAnalysis = false;
+            placementSampledForCurrentTurn = false;
             kataGo.RequestAnalysis(Stone::Black);
         };
 
@@ -990,39 +1156,35 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             }
         };
 
-        // レート戦/カジュアルの確認ダイアログを表示し、選択されたモードを返す。KataGo起動直後の
-        // 初回確認と、新規対局開始時(startNewGame)の両方で使う
-        const auto askGameMode = [&]() -> GameMode
-        {
-            return (ShowMessageBoxUtf8(renderer.GetWindowHandle(),
-                "レート戦として対局しますか?(いいえ=カジュアル)\n"
-                "レート戦のみ、対局結果がレーティングに反映されます。",
-                "KurenaiGo", MB_YESNO | MB_ICONQUESTION) == IDYES)
-                ? GameMode::Ranked : GameMode::Casual;
-        };
-
-        // 対局終了後(GameOver)または棋譜再生中(Reviewing)から「新規対局」を選んだ時に呼ぶ。
-        // レート戦/カジュアルを再確認したうえで、盤面・着手履歴・KataGo側の盤面をすべて空の
-        // 状態に戻し、黒番(人間)の手番から対局を再開する(何度でも打ち直せるようにする)
+        // 対局終了後(GameOver)または棋譜再生中(Reviewing)、あるいはアプリ起動直後に呼ぶ。
+        // 盤面・着手履歴をすべて空の状態に戻し、モード選択(ChoosingGameMode)からやり直す
+        // (何度でも打ち直せるようにする。初回起動時と新規対局時のセットアップを統合している)
         const auto startNewGame = [&]()
         {
-            currentGameMode = askGameMode();
             board = GoBoard(kBoardLines);
             moveHistory.clear();
-            kataGo.ResetBoard();
-            enterHumanToMove();
+            turnState = TurnState::ChoosingGameMode;
         };
 
-        kataGo.StartAsync(
-            kataGoDir / L"katago.exe",
-            kataGoDir / L"model.bin.gz",
-            kataGoDir / L"gtp.cfg",
-            kataGoDir / L"katago_stderr.log",
-            kBoardLines);
+        // レート戦/カジュアルの強さがすべて決まった後に呼ぶ。目標レーティングからmaxVisitsを
+        // 求め、KataGoを起動する(対局ごとに強さを変えるため、対局開始のたびにStartAsyncを
+        // 呼び直す。KataGoClient::StartAsyncは実行中のプロセスがあれば終了させてから作り直す
+        // ため、同一インスタンスを安全に再利用できる)
+        const auto beginGameWithTargetRating = [&](double targetRating)
+        {
+            currentAiTargetRating = ClampAiTargetRating(targetRating);
+            isCurrentGamePlacement = (currentGameMode == GameMode::Ranked && userRating.GamesPlayed == 0);
+            placementTracker.Reset(isCurrentGamePlacement);
 
-        // StartAsyncは非同期(専用ワーカースレッドでOpenCL初回チューニング等を行う)ため、
-        // ここでモード確認のモーダルを出してもKataGoの起動完了を待たせることにはならない
-        currentGameMode = askGameMode();
+            const int maxVisits = ComputeMaxVisitsForRating(currentAiTargetRating);
+            kataGo.StartAsync(
+                kataGoDir / L"katago.exe",
+                kataGoDir / L"model.bin.gz",
+                kataGoDir / L"gtp.cfg",
+                kataGoDir / L"katago_stderr.log",
+                kBoardLines, maxVisits);
+            turnState = TurnState::EngineStarting;
+        };
 
         bool territoryOverlayEnabled = false;
         bool hintOverlayEnabled = false;
@@ -1082,31 +1244,48 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 hintOverlayEnabled = !hintOverlayEnabled;
             }
 
-            // 着手以外の操作(パス・投了・地合い表示切替・着手ヒント表示切替・棋譜再生・終了)を
-            // 行うボタン行。表示内容は対局の進行状態(turnState)に応じて変える
+            // 着手以外の操作(パス・投了・地合い表示切替・着手ヒント表示切替・棋譜再生・新規対局・
+            // 終了・対局モード/強さ選択)を行うボタン行。表示内容は対局の進行状態(turnState)に
+            // 応じて変える
             std::vector<ButtonSpec> buttonSpecs;
-            buttonSpecs.push_back({ ButtonId::ToggleTerritory, L"地合い表示", true, territoryOverlayEnabled });
-            buttonSpecs.push_back({ ButtonId::ToggleHint, L"着手ヒント", true, hintOverlayEnabled });
-            if (turnState == TurnState::HumanToMove)
+            if (turnState == TurnState::ChoosingGameMode)
             {
-                buttonSpecs.push_back({ ButtonId::Pass, L"パス", true, false });
-                buttonSpecs.push_back({ ButtonId::Resign, L"投了", true, false });
+                buttonSpecs.push_back({ ButtonId::ChooseRanked, L"レート戦", true, false });
+                buttonSpecs.push_back({ ButtonId::ChooseCasual, L"カジュアル", true, false });
             }
-            if (turnState == TurnState::GameOver && !lastSavedGamePath.empty())
+            else if (turnState == TurnState::ChoosingCasualStrength)
             {
-                buttonSpecs.push_back({ ButtonId::StartReview, L"棋譜再生", true, false });
+                buttonSpecs.push_back({ ButtonId::StrengthMuchWeaker, L"とても弱め", true, false });
+                buttonSpecs.push_back({ ButtonId::StrengthWeaker, L"弱め", true, false });
+                buttonSpecs.push_back({ ButtonId::StrengthRecommended, L"おすすめ", true, false });
+                buttonSpecs.push_back({ ButtonId::StrengthStronger, L"強め", true, false });
+                buttonSpecs.push_back({ ButtonId::StrengthMuchStronger, L"とても強め", true, false });
             }
-            if (turnState == TurnState::Reviewing)
+            else
             {
-                const bool canGoPrev = reviewMoveIndex > 0;
-                const bool canGoNext = reviewMoveIndex < static_cast<int>(reviewRecord.Moves.size());
-                buttonSpecs.push_back({ ButtonId::ReviewPrev, L"前の手", canGoPrev, false });
-                buttonSpecs.push_back({ ButtonId::ReviewNext, L"次の手", canGoNext, false });
-            }
-            if (turnState == TurnState::GameOver || turnState == TurnState::Reviewing)
-            {
-                // 対局終了後・棋譜再生中はいつでも新規対局を開始できる(何度でも打ち直せるようにする)
-                buttonSpecs.push_back({ ButtonId::NewGame, L"新規対局", true, false });
+                buttonSpecs.push_back({ ButtonId::ToggleTerritory, L"地合い表示", true, territoryOverlayEnabled });
+                buttonSpecs.push_back({ ButtonId::ToggleHint, L"着手ヒント", true, hintOverlayEnabled });
+                if (turnState == TurnState::HumanToMove)
+                {
+                    buttonSpecs.push_back({ ButtonId::Pass, L"パス", true, false });
+                    buttonSpecs.push_back({ ButtonId::Resign, L"投了", true, false });
+                }
+                if (turnState == TurnState::GameOver && !lastSavedGamePath.empty())
+                {
+                    buttonSpecs.push_back({ ButtonId::StartReview, L"棋譜再生", true, false });
+                }
+                if (turnState == TurnState::Reviewing)
+                {
+                    const bool canGoPrev = reviewMoveIndex > 0;
+                    const bool canGoNext = reviewMoveIndex < static_cast<int>(reviewRecord.Moves.size());
+                    buttonSpecs.push_back({ ButtonId::ReviewPrev, L"前の手", canGoPrev, false });
+                    buttonSpecs.push_back({ ButtonId::ReviewNext, L"次の手", canGoNext, false });
+                }
+                if (turnState == TurnState::GameOver || turnState == TurnState::Reviewing)
+                {
+                    // 対局終了後・棋譜再生中はいつでも新規対局を開始できる(何度でも打ち直せるようにする)
+                    buttonSpecs.push_back({ ButtonId::NewGame, L"新規対局", true, false });
+                }
             }
             buttonSpecs.push_back({ ButtonId::Quit, L"終了", true, false });
 
@@ -1131,6 +1310,29 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     case ButtonId::ReviewNext:      reviewNextPressed = true; break;
                     case ButtonId::NewGame:         newGamePressed = true; break;
                     case ButtonId::Quit:            renderer.Close(); break;
+                    case ButtonId::ChooseRanked:
+                        currentGameMode = GameMode::Ranked;
+                        beginGameWithTargetRating(userRating.Rating);
+                        break;
+                    case ButtonId::ChooseCasual:
+                        currentGameMode = GameMode::Casual;
+                        turnState = TurnState::ChoosingCasualStrength;
+                        break;
+                    case ButtonId::StrengthMuchWeaker:
+                        beginGameWithTargetRating(userRating.Rating + kCasualStrengthOffsets[0]);
+                        break;
+                    case ButtonId::StrengthWeaker:
+                        beginGameWithTargetRating(userRating.Rating + kCasualStrengthOffsets[1]);
+                        break;
+                    case ButtonId::StrengthRecommended:
+                        beginGameWithTargetRating(userRating.Rating + kCasualStrengthOffsets[2]);
+                        break;
+                    case ButtonId::StrengthStronger:
+                        beginGameWithTargetRating(userRating.Rating + kCasualStrengthOffsets[3]);
+                        break;
+                    case ButtonId::StrengthMuchStronger:
+                        beginGameWithTargetRating(userRating.Rating + kCasualStrengthOffsets[4]);
+                        break;
                     }
                     break; // ボタンは重ならない配置のため、1個ヒットしたら以降は調べない
                 }
@@ -1171,11 +1373,41 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 {
                     latestAnalysis = polledAnalysis;
                     hasAnalysis = !latestAnalysis.Failed;
+
+                    // 初期レーティング決定(プレースメント)モード中は、黒(人間)の手番ごとの
+                    // 勝率を追跡し、収束したらその場でレーティングを確定する(10.4節参照)。
+                    // TryGetAnalysisResultは同じ結果を読み出すたびtrueを返し続けるため、
+                    // この手番でまだサンプリングしていない場合のみ実行する
+                    if (hasAnalysis && placementTracker.Active && !placementSampledForCurrentTurn)
+                    {
+                        placementSampledForCurrentTurn = true;
+                        const bool converged = placementTracker.Update(latestAnalysis.WinrateForColorToMove);
+                        if (converged)
+                        {
+                            userRating.Rating = placementTracker.CurrentEstimate();
+                            userRating.GamesPlayed += 1;
+                            placementTracker.Active = false;
+                            try
+                            {
+                                AppendRatingEntry(ratingPath, BuildTimestamp(std::chrono::system_clock::now()),
+                                    userRating.Rating, "PLACEMENT");
+                            }
+                            catch (const std::exception& e)
+                            {
+                                std::ofstream log("error.log", std::ios::app);
+                                log << "レーティング履歴の保存に失敗しました: " << e.what() << std::endl;
+                            }
+                        }
+                    }
                 }
             }
 
             switch (turnState)
             {
+            case TurnState::ChoosingGameMode:
+            case TurnState::ChoosingCasualStrength:
+                break; // ボタン選択のみで、ここでの追加処理は無い
+
             case TurnState::EngineStarting:
                 if (kataGo.IsStartupComplete())
                 {
@@ -1191,7 +1423,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 if (resignPressed)
                 {
                     renderer.PlaySound(gameEndSound);
-                    lastSavedGamePath = FinalizeGameResult(gamesDir, ratingPath, moveHistory, "W+R", currentGameMode, userRating);
+                    lastSavedGamePath = FinalizeGameResult(gamesDir, ratingPath, moveHistory, "W+R", currentGameMode, currentAiTargetRating, isCurrentGamePlacement, userRating);
                     ShowMessageBoxUtf8(renderer.GetWindowHandle(), "投了しました。KataGoの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
                     turnState = TurnState::GameOver;
                 }
@@ -1239,7 +1471,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     else if (result.IsResign)
                     {
                         renderer.PlaySound(gameEndSound);
-                        lastSavedGamePath = FinalizeGameResult(gamesDir, ratingPath, moveHistory, "B+R", currentGameMode, userRating);
+                        lastSavedGamePath = FinalizeGameResult(gamesDir, ratingPath, moveHistory, "B+R", currentGameMode, currentAiTargetRating, isCurrentGamePlacement, userRating);
                         ShowMessageBoxUtf8(renderer.GetWindowHandle(), "KataGoが投了しました。あなたの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
                         turnState = TurnState::GameOver;
                     }
@@ -1280,7 +1512,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 if (kataGo.TryGetFinalScore(score))
                 {
                     renderer.PlaySound(gameEndSound);
-                    lastSavedGamePath = FinalizeGameResult(gamesDir, ratingPath, moveHistory, score, currentGameMode, userRating);
+                    lastSavedGamePath = FinalizeGameResult(gamesDir, ratingPath, moveHistory, score, currentGameMode, currentAiTargetRating, isCurrentGamePlacement, userRating);
                     const std::string message = "対局終了\n結果: " + score;
                     ShowMessageBoxUtf8(renderer.GetWindowHandle(), message, "KurenaiGo - 対局終了", MB_OK | MB_ICONINFORMATION);
                     turnState = TurnState::GameOver;
@@ -1402,7 +1634,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             }
             DrawHud(renderer, layout, turnState, displayBoard,
                 reviewMoveIndex, static_cast<int>(reviewRecord.Moves.size()), reviewRecord.Result,
-                userRating.Rating, currentGameMode);
+                userRating.Rating, currentGameMode, currentAiTargetRating,
+                placementTracker.Active, placementTracker.CurrentEstimate());
 
             // 着手以外の操作ボタンを盤下のボタン行に描画する
             for (size_t i = 0; i < buttonRects.size(); ++i)

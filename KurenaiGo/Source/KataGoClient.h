@@ -66,9 +66,15 @@ namespace KurenaiGo
 
         // katago.exeを起動し、boardsize/clear_board/komi/time_settingsを送って対局開始状態にする。
         // 別スレッドで実行され、完了は IsStartupComplete() でポーリングする。失敗時は
-        // LastError() にメッセージが入る(致命的なのでMain側で表示して終了する想定)
+        // LastError() にメッセージが入る(致命的なのでMain側で表示して終了する想定)。
+        // maxVisitsはgtp.cfgのmaxVisitsを-override-configでこの値に上書きする
+        // (実機検証済み: genmoveの探索がこの値でおおむね頭打ちになることを確認済み。
+        // kata-analyzeの表示用解析はこの値に縛られない場合がある、docs/KurenaiGo.html参照)。
+        // すでに起動中のプロセスがある状態で呼んだ場合は、それを終了させてから作り直す
+        // (対局ごとに強さを変えるため、同一インスタンスを再起動できるようにしている)
         void StartAsync(const std::filesystem::path& exePath, const std::filesystem::path& modelPath,
-            const std::filesystem::path& configPath, const std::filesystem::path& stderrLogPath, int boardSize);
+            const std::filesystem::path& configPath, const std::filesystem::path& stderrLogPath,
+            int boardSize, int maxVisits);
         bool IsStartupComplete() const { return m_StartupComplete.load(); }
         bool StartupFailed() const { return m_StartupFailed.load(); }
 
@@ -98,7 +104,9 @@ namespace KurenaiGo
 
     private:
         void LaunchProcess(const std::filesystem::path& exePath, const std::filesystem::path& modelPath,
-            const std::filesystem::path& configPath, const std::filesystem::path& stderrLogPath);
+            const std::filesystem::path& configPath, const std::filesystem::path& stderrLogPath, int maxVisits);
+        // デストラクタとStartAsync(再起動時)の両方から呼ぶプロセス終了処理
+        void ShutdownProcessIfRunning();
         void SendCommand(const std::string& command);
         std::string ReadResponseLine();
         // コマンド送信+応答受信を1つの操作として行い、"= "を取り除いた本文を返す。
