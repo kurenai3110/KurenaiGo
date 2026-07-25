@@ -65,8 +65,9 @@ namespace
 
     // 盤の下に確保する操作ボタン行の高さ。ComputeBoardLayoutはこの分を除いた領域に盤を配置する
     constexpr float kButtonBarHeight = 64.0f;
-    // 盤の上に確保する損失グラフの帯の高さ(棋譜再生中のみ描画する。対局中は空のまま)
-    constexpr float kGraphAreaHeight = 90.0f;
+    // 盤の上に確保する帯の高さ(棋譜再生中のみ、上段に着手の言語化コメント・下段に損失グラフを
+    // 描画する。対局中は空のまま)
+    constexpr float kGraphAreaHeight = 130.0f;
 
     constexpr uint32_t kWindowWidth = 900;
     constexpr uint32_t kWindowHeight =
@@ -105,9 +106,14 @@ namespace
     constexpr float kWinrateTextMargin = 4.0f; // バーからテキストまでの隙間
     constexpr float kWinrateTextColorR = 0.90f, kWinrateTextColorG = 0.90f, kWinrateTextColorB = 0.88f;
 
-    // 損失グラフ(棋譜再生中のみ、盤上のkGraphAreaHeight帯に描画)の見た目
+    // 着手の言語化コメント(棋譜再生中のみ、kGraphAreaHeight帯の上段)の見た目
+    constexpr float kCommentaryFontSize = 15.0f;
+    constexpr float kCommentaryHeight = 34.0f; // 帯の上段としてこの高さ分を確保する
+    constexpr float kCommentaryColorR = 0.92f, kCommentaryColorG = 0.90f, kCommentaryColorB = 0.75f;
+
+    // 損失グラフ(棋譜再生中のみ、kGraphAreaHeight帯の下段に描画)の見た目
     constexpr float kGraphMarginX = 24.0f; // 帯の左右の余白
-    constexpr float kGraphMarginTop = 12.0f;
+    constexpr float kGraphMarginTop = 12.0f; // kCommentaryHeightの下からグラフ上端までの隙間
     constexpr float kGraphMarginBottom = 8.0f;
     constexpr float kGraphLineThickness = 2.5f;
     constexpr float kGraphLineColorR = 0.95f, kGraphLineColorG = 0.75f, kGraphLineColorB = 0.25f;
@@ -313,6 +319,18 @@ namespace
         return analysis.ColorToMove == Stone::Black ? analysis.ScoreLeadForColorToMove : -analysis.ScoreLeadForColorToMove;
     }
 
+    // GTPの頂点表記(列はA〜T、Iを飛ばす。行は盤面下端から1始まり)と同じ慣習で座標を文字列化する。
+    // KataGoClient::ToVertexと同じ変換則(row=0が盤面下端)
+    std::wstring FormatVertex(int row, int col)
+    {
+        wchar_t columnChar = static_cast<wchar_t>(L'A' + col);
+        if (columnChar >= L'I')
+        {
+            columnChar = static_cast<wchar_t>(columnChar + 1);
+        }
+        return std::wstring(1, columnChar) + std::to_wstring(row + 1);
+    }
+
     // 盤の上マージンに、黒番から見た勝率で2分割した横棒を描く
     void DrawWinrateBar(KurenaiEngine2D& renderer, TextureHandle whiteTexture, const BoardLayout& layout, float blackWinrate)
     {
@@ -361,6 +379,69 @@ namespace
             kWinrateTextMargin;
         renderer.DrawText(textX, textY, L"解析中...", kWinrateTextFontSize,
             kWinrateTextColorR, kWinrateTextColorG, kWinrateTextColorB, 1.0f);
+    }
+
+    // 着手の言語化: moveIndex手目の局面に至った手(record.Moves[moveIndex-1])について、
+    // 着手者から見た勝率の変化と最善手だったかを日本語の文章にする。moveIndex==0(まだ1手も
+    // 進めていない)なら空文字列、前後どちらかの手数が未解析なら「解析中...」を返す
+    std::wstring BuildMoveCommentary(const SgfGameRecord& record, int moveIndex,
+        const std::vector<float>& winrateCache, const std::vector<int>& bestMoveRowCache,
+        const std::vector<int>& bestMoveColCache, const std::vector<bool>& hasCached)
+    {
+        if (moveIndex <= 0 || moveIndex > static_cast<int>(record.Moves.size()))
+        {
+            return std::wstring();
+        }
+
+        const size_t beforeIndex = static_cast<size_t>(moveIndex - 1);
+        const size_t afterIndex = static_cast<size_t>(moveIndex);
+        if (!hasCached[beforeIndex] || !hasCached[afterIndex])
+        {
+            return L"解析中...";
+        }
+
+        const SgfMove& playedMove = record.Moves[beforeIndex];
+        const Stone mover = playedMove.Color;
+
+        // 着手者視点の勝率(黒視点キャッシュを着手者視点へ変換)
+        const float winrateBefore = (mover == Stone::Black) ? winrateCache[beforeIndex] : 1.0f - winrateCache[beforeIndex];
+        const float winrateAfter = (mover == Stone::Black) ? winrateCache[afterIndex] : 1.0f - winrateCache[afterIndex];
+        const float deltaPercent = (winrateAfter - winrateBefore) * 100.0f;
+
+        const bool isBestMove = !playedMove.IsPass &&
+            bestMoveRowCache[beforeIndex] == playedMove.Row && bestMoveColCache[beforeIndex] == playedMove.Col;
+
+        std::wostringstream text;
+        text << moveIndex << L"手目: ";
+
+        // 勝率の下げ幅による分類。一般的なGo解析ツールで使われる目安の一例であり、
+        // 局面によって適切な閾値は変わり得る(絶対的な基準ではない)
+        if (isBestMove || deltaPercent >= -2.0f)
+        {
+            text << L"最善手級です";
+        }
+        else if (deltaPercent >= -5.0f)
+        {
+            text << L"やや損な手です";
+        }
+        else if (deltaPercent >= -15.0f)
+        {
+            text << L"緩着です";
+        }
+        else
+        {
+            text << L"悪手です";
+        }
+
+        text << L"(勝率 " << std::fixed << std::setprecision(1) << (winrateBefore * 100.0f) << L"%→"
+             << (winrateAfter * 100.0f) << L"%)";
+
+        if (!isBestMove && bestMoveRowCache[beforeIndex] >= 0 && bestMoveColCache[beforeIndex] >= 0)
+        {
+            text << L"  最善手は " << FormatVertex(bestMoveRowCache[beforeIndex], bestMoveColCache[beforeIndex]) << L" でした";
+        }
+
+        return text.str();
     }
 
     // 石のない交点に、地の所有率(黒視点)に応じた色つきオーバーレイを描く(Tキーでトグル)
@@ -659,7 +740,20 @@ namespace
         return replayBoard;
     }
 
-    // 損失グラフ(棋譜再生中のみ、盤上部のkGraphAreaHeight帯に黒視点勝率の推移を描く)。
+    // 盤上部の帯の上段に、着手の言語化コメントを描く(棋譜再生中のみ)
+    void DrawMoveCommentary(KurenaiEngine2D& renderer, uint32_t windowHeight, const std::wstring& commentary)
+    {
+        if (commentary.empty())
+        {
+            return;
+        }
+        const float textX = kGraphMarginX;
+        const float textY = static_cast<float>(windowHeight) - kCommentaryHeight * 0.5f - kCommentaryFontSize * 0.5f;
+        renderer.DrawText(textX, textY, commentary, kCommentaryFontSize,
+            kCommentaryColorR, kCommentaryColorG, kCommentaryColorB, 1.0f);
+    }
+
+    // 損失グラフ(棋譜再生中のみ、盤上部のkGraphAreaHeight帯の下段に黒視点勝率の推移を描く)。
     // hasCached[i]がtrueの手数のみ値が有効(未解析の区間は線が途切れる)。
     // winrateCache/hasCachedのサイズは総手数+1(0手目〜総手数)
     void DrawLossGraph(KurenaiEngine2D& renderer, uint32_t windowWidth, uint32_t windowHeight,
@@ -674,7 +768,7 @@ namespace
         const float graphLeft = kGraphMarginX;
         const float graphRight = static_cast<float>(windowWidth) - kGraphMarginX;
         const float graphBottom = static_cast<float>(windowHeight) - kGraphAreaHeight + kGraphMarginBottom;
-        const float graphTop = static_cast<float>(windowHeight) - kGraphMarginTop;
+        const float graphTop = static_cast<float>(windowHeight) - kCommentaryHeight - kGraphMarginTop;
         const float graphWidth = (std::max)(1.0f, graphRight - graphLeft);
         const float graphHeight = (std::max)(1.0f, graphTop - graphBottom);
 
@@ -748,9 +842,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         GoBoard reviewBoard(kBoardLines);
 
         // 棋譜再生中の局面ごとの解析結果キャッシュ(黒視点に変換済み)。要素数は総手数+1
-        // (0手目〜総手数)。reviewHasCached[i]がtrueの手数のみ有効な値を持つ
+        // (0手目〜総手数)。reviewHasCached[i]がtrueの手数のみ有効な値を持つ。
+        // reviewBestMoveRow/ColCacheはその局面での最善候補手(Order==0)の座標(未取得時は-1)で、
+        // 着手の言語化(実際の着手と比較する)に使う
         std::vector<float> reviewWinrateCache;
         std::vector<float> reviewScoreLeadCache;
+        std::vector<int> reviewBestMoveRowCache;
+        std::vector<int> reviewBestMoveColCache;
         std::vector<bool> reviewHasCached;
         // 解析要求中のreviewMoveIndex(-1なら要求なし)。KataGoClientは1件ずつしか処理しない
         // 設計のため、前の解析が終わるまで次のreset/replayは送らない(描画ループを止めないため)
@@ -768,22 +866,23 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             kataGo.RequestAnalysis(Stone::Black);
         };
 
-        // reviewMoveIndex手目の局面をKataGoに解析させる(未キャッシュかつ現在解析要求中でない場合のみ)。
-        // KataGoの盤面をclear_boardしてから0手目〜reviewMoveIndex手目の直前まで再生し直し、
-        // その局面の解析を要求する
-        const auto triggerReviewAnalysisIfNeeded = [&]()
+        // targetIndex手目の局面をKataGoに解析させる(未キャッシュかつ現在解析要求中でない場合のみ)。
+        // KataGoの盤面をclear_boardしてから0手目〜targetIndex手目の直前まで再生し直し、
+        // その局面の解析を要求する。要求を送った場合はtrueを返す
+        const auto requestReviewAnalysisFor = [&](int targetIndex) -> bool
         {
             if (reviewAnalysisPendingIndex != -1)
             {
-                return;
+                return false;
             }
-            if (reviewMoveIndex < static_cast<int>(reviewHasCached.size()) && reviewHasCached[static_cast<size_t>(reviewMoveIndex)])
+            if (targetIndex < 0 || targetIndex >= static_cast<int>(reviewHasCached.size()) ||
+                reviewHasCached[static_cast<size_t>(targetIndex)])
             {
-                return;
+                return false;
             }
 
             kataGo.ResetBoard();
-            for (int i = 0; i < reviewMoveIndex; ++i)
+            for (int i = 0; i < targetIndex; ++i)
             {
                 const SgfMove& move = reviewRecord.Moves[static_cast<size_t>(i)];
                 if (move.IsPass)
@@ -796,11 +895,21 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 }
             }
 
-            const Stone colorToMove = (reviewMoveIndex == 0)
+            const Stone colorToMove = (targetIndex == 0)
                 ? Stone::Black
-                : Opponent(reviewRecord.Moves[static_cast<size_t>(reviewMoveIndex - 1)].Color);
+                : Opponent(reviewRecord.Moves[static_cast<size_t>(targetIndex - 1)].Color);
             kataGo.RequestAnalysis(colorToMove);
-            reviewAnalysisPendingIndex = reviewMoveIndex;
+            reviewAnalysisPendingIndex = targetIndex;
+            return true;
+        };
+
+        // 現在の局面の解析を優先し、手が空いたら着手の言語化に使う1手前の局面も解析する
+        const auto triggerReviewAnalysisIfNeeded = [&]()
+        {
+            if (!requestReviewAnalysisFor(reviewMoveIndex) && reviewMoveIndex > 0)
+            {
+                requestReviewAnalysisFor(reviewMoveIndex - 1);
+            }
         };
 
         kataGo.StartAsync(
@@ -927,6 +1036,21 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         const size_t index = static_cast<size_t>(reviewAnalysisPendingIndex);
                         reviewWinrateCache[index] = ToBlackWinrate(polledAnalysis);
                         reviewScoreLeadCache[index] = ToBlackScoreLead(polledAnalysis);
+
+                        int bestRow = -1;
+                        int bestCol = -1;
+                        for (const AnalysisMoveInfo& move : polledAnalysis.TopMoves)
+                        {
+                            if (move.Order == 0)
+                            {
+                                bestRow = move.Row;
+                                bestCol = move.Col;
+                                break;
+                            }
+                        }
+                        reviewBestMoveRowCache[index] = bestRow;
+                        reviewBestMoveColCache[index] = bestCol;
+
                         reviewHasCached[index] = true;
                     }
                     reviewAnalysisPendingIndex = -1;
@@ -1063,6 +1187,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         hasAnalysis = false; // 直前の対局の解析結果を棋譜再生画面に持ち越さない
                         reviewWinrateCache.assign(reviewRecord.Moves.size() + 1, 0.5f);
                         reviewScoreLeadCache.assign(reviewRecord.Moves.size() + 1, 0.0f);
+                        reviewBestMoveRowCache.assign(reviewRecord.Moves.size() + 1, -1);
+                        reviewBestMoveColCache.assign(reviewRecord.Moves.size() + 1, -1);
                         reviewHasCached.assign(reviewRecord.Moves.size() + 1, false);
                         reviewAnalysisPendingIndex = -1;
                         turnState = TurnState::Reviewing;
@@ -1144,6 +1270,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             }
             if (turnState == TurnState::Reviewing)
             {
+                const std::wstring commentary = BuildMoveCommentary(reviewRecord, reviewMoveIndex,
+                    reviewWinrateCache, reviewBestMoveRowCache, reviewBestMoveColCache, reviewHasCached);
+                DrawMoveCommentary(renderer, height, commentary);
                 DrawLossGraph(renderer, width, height, reviewWinrateCache, reviewHasCached, reviewMoveIndex);
             }
             DrawHud(renderer, layout, turnState, displayBoard,

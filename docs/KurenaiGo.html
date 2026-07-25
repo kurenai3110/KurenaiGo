@@ -472,10 +472,11 @@ SGFの座標は列→行の順でa〜s(0〜18)、行は盤面<strong>上端</str
 棋譜再生中に着手位置(<code>reviewMoveIndex</code>)を動かすと、その局面をKataGoにも解析させます。
 対局中の<code>kataGo</code>(<code>KataGoClient</code>)は対局の最新局面を指したままのため、
 <code>KataGoClient::ResetBoard()</code>(<code>clear_board</code>を送るだけの同期呼び出し)で
-盤面を空にしてから、0手目から<code>reviewMoveIndex</code>手目の直前まで<code>PlayMove</code>/
-<code>PlayPass</code>で再生し直し、その局面の手番(0手目なら黒、それ以外は直前の手の
-<code>Opponent</code>)で<code>RequestAnalysis</code>を要求します(<code>Main.cpp</code>の
-<code>triggerReviewAnalysisIfNeeded</code>)。
+盤面を空にしてから、0手目から対象の手数の直前まで<code>PlayMove</code>/<code>PlayPass</code>で
+再生し直し、その局面の手番(0手目なら黒、それ以外は直前の手の<code>Opponent</code>)で
+<code>RequestAnalysis</code>を要求します(<code>Main.cpp</code>の<code>requestReviewAnalysisFor</code>)。
+呼び出し側の<code>triggerReviewAnalysisIfNeeded</code>は現在の手数を優先しつつ、手が空いていれば
+9.5節の言語化に使う1手前の局面もあわせて解析します。
 </p>
 <p>
 解析結果は手数ごとに<code>reviewWinrateCache</code>/<code>reviewScoreLeadCache</code>
@@ -496,11 +497,51 @@ KataGoは1件ずつしかリクエストを処理できない設計のため、�
 現在の手数には小さな丸印を表示します。全手数の一括先読みは行わず、訪れた手数だけ解析する
 遅延評価方式のため、グラフは棋譜を辿るにつれて徐々に完成していきます。
 </p>
+<h3>9.5 着手の言語化</h3>
+<p>
+損失グラフの上には、その手数に至った1手(<code>reviewRecord.Moves[reviewMoveIndex - 1]</code>)が
+どの程度の手だったかを日本語の文章で表示します(<code>BuildMoveCommentary</code>)。着手前後の
+局面の評価が両方キャッシュ済みになった時点で、着手した側の視点に変換した勝率
+(<code>ToBlackWinrate</code>の値を、着手者が白なら<code>1 - 値</code>にする)の差分から
+分類します。
+</p>
+<table>
+<thead><tr><th>勝率の変化(着手者視点)</th><th>表示</th></tr></thead>
+<tbody>
+<tr><td>-2ポイント以上、または着手前の局面でKataGoの最有力候補手(<code>Order == 0</code>)と一致</td><td>最善手級です</td></tr>
+<tr><td>-2〜-5ポイント</td><td>やや損な手です</td></tr>
+<tr><td>-5〜-15ポイント</td><td>緩着です</td></tr>
+<tr><td>-15ポイント未満</td><td>悪手です</td></tr>
+</tbody>
+</table>
+<p>
+最善手でなかった場合は、着手前の局面でのKataGoの最有力候補手の座標を<code>FormatVertex</code>
+(<code>KataGoClient::ToVertex</code>と同じA〜T(<code>I</code>を除く)+行番号の表記)で文中に
+添えます。この閾値はKataGoを使った解析ツールで一般的に用いられる目安を参考にした一例であり、
+手筋の正しさを厳密に判定するものではありません(死活・シチョウ・ヨセ等の詳細な分類は今後の
+課題とし、10章参照)。
+</p>
+<p>
+言語化には着手<strong>前</strong>の局面の評価・最有力候補手も必要なため、
+<code>requestReviewAnalysisFor(target)</code>という関数に一般化し、
+<code>triggerReviewAnalysisIfNeeded</code>は現在の手数を優先しつつ、要求が不要だった場合
+(=現在の手数はすでに解析要求済みか解析済み)に限り1手前の局面もあわせて要求します。KataGoは
+1件ずつしかリクエストを処理できないため、現在の手数の表示を遅らせてまで1手前を優先することは
+ありません。前後どちらかが未キャッシュの間は「解析中...」と表示します。最有力候補手の座標は
+<code>reviewBestMoveRowCache</code>/<code>reviewBestMoveColCache</code>として、勝率・目差の
+キャッシュ(9.4節)と同様に手数ごとにキャッシュします。
+</p>
+<p>
+このコメント表示の分だけ、盤上部の帯の高さ(<code>kGraphAreaHeight</code>)を90pxから130pxへ
+拡張し、損失グラフ(9.4節)はその下に詰めて描画するようレイアウトを調整しました。
+</p>
 </section>
 
 <section id="future">
 <h2>10. 今後の課題</h2>
 <ul>
+<li>棋力の数値化(レーティング)・棋力に応じたAIの強さ設定</li>
+<li>苦手分野の解析(複数対局のSGFを跨いだ集計。9.5節の悪手判定ロジックを土台にする想定)</li>
 <li>色の選択(現在は人間=黒固定)・ハンディキャップ対局</li>
 <li>対局のリスタート(現在はアプリの再起動が必要)</li>
 <li>過去の複数対局から選んで読み込む機能(現状は直前の対局のみ)</li>
