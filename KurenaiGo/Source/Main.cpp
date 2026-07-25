@@ -30,6 +30,7 @@
 #include "KurenaiEngine2D.h"
 #include "KurenaiTypes.h"
 #include "PathUtil.h"
+#include "Rating.h"
 #include "Sgf.h"
 
 using namespace Kurenai;
@@ -52,9 +53,13 @@ namespace
         return wide;
     }
 
-    void ShowMessageBoxUtf8(const std::string& utf8Text, const std::string& utf8Caption, UINT type)
+    // ownerに実ウィンドウのHWNDを渡すことで、ダイアログを閉じた後にキーボードフォーカスが
+    // そのウィンドウへ確実に戻る(owner省略時はダイアログの所有者が無くなり、閉じた後の
+    // フォーカスの戻り先が不定になる。ダイアログを閉じた直後にキー入力を受け付ける必要がある
+    // 呼び出し箇所では必ずownerを指定すること)
+    int ShowMessageBoxUtf8(HWND owner, const std::string& utf8Text, const std::string& utf8Caption, UINT type)
     {
-        MessageBoxW(nullptr, Utf8ToWide(utf8Text).c_str(), Utf8ToWide(utf8Caption).c_str(), type);
+        return MessageBoxW(owner, Utf8ToWide(utf8Text).c_str(), Utf8ToWide(utf8Caption).c_str(), type);
     }
 
     // 盤の目の数(19路盤)
@@ -527,10 +532,18 @@ namespace
         Reviewing,       // 棋譜再生中。矢印キーで手を進め戻しする
     };
 
+    // 対局モード。レート戦のみレーティング(棋力の数値化、9.6節参照)を更新する
+    enum class GameMode
+    {
+        Ranked, // レート戦。対局結果に応じてレーティングを更新し履歴に記録する
+        Casual, // カジュアル。SGF保存は行うがレーティングには影響しない
+    };
+
     // 盤下のHUDに表示する手番状態・アゲハマ数のテキストを組み立てる。reviewMoveIndex/
     // reviewTotalMoves/reviewResultはturnState==Reviewingの場合のみ使う
     std::wstring BuildStatusText(TurnState turnState, const GoBoard& board,
-        int reviewMoveIndex, int reviewTotalMoves, const std::string& reviewResult)
+        int reviewMoveIndex, int reviewTotalMoves, const std::string& reviewResult,
+        double userRating, GameMode gameMode)
     {
         std::wstring text;
         switch (turnState)
@@ -551,18 +564,21 @@ namespace
         }
         text += L"   アゲハマ 黒:" + std::to_wstring(board.CapturesBy(Stone::Black)) +
             L" 白:" + std::to_wstring(board.CapturesBy(Stone::White));
+        text += L"   レーティング:" + std::to_wstring(std::lround(userRating)) +
+            L" [" + (gameMode == GameMode::Ranked ? L"レート戦" : L"カジュアル") + L"]";
         return text;
     }
 
     // 盤の下マージンにHUDテキストを描画する
     void DrawHud(KurenaiEngine2D& renderer, const BoardLayout& layout, TurnState turnState, const GoBoard& board,
-        int reviewMoveIndex, int reviewTotalMoves, const std::string& reviewResult)
+        int reviewMoveIndex, int reviewTotalMoves, const std::string& reviewResult,
+        double userRating, GameMode gameMode)
     {
         const float hudX = layout.CenterX - layout.GridExtent * 0.5f;
         const float bottomMarginCenterY = (layout.CenterY - layout.BoardExtent * 0.5f) * 0.5f;
         const float hudY = bottomMarginCenterY - kHudFontSize * 0.5f;
         renderer.DrawText(hudX, hudY,
-            BuildStatusText(turnState, board, reviewMoveIndex, reviewTotalMoves, reviewResult),
+            BuildStatusText(turnState, board, reviewMoveIndex, reviewTotalMoves, reviewResult, userRating, gameMode),
             kHudFontSize, kHudColorR, kHudColorG, kHudColorB, 1.0f);
     }
 
@@ -693,6 +709,20 @@ namespace
         return name.str();
     }
 
+    // 現在時刻から"YYYYMMDD_HHMMSS"形式のタイムスタンプを組み立てる(rating_history.txtの
+    // 各行の先頭に使う。BuildGameFileNameと同じput_time呼び出しを再利用し、新しい日時表記を
+    // 作らない)
+    std::string BuildTimestamp(std::chrono::system_clock::time_point when)
+    {
+        const std::time_t time = std::chrono::system_clock::to_time_t(when);
+        std::tm localTime{};
+        localtime_s(&localTime, &time);
+
+        std::ostringstream name;
+        name << std::put_time(&localTime, "%Y%m%d_%H%M%S");
+        return name.str();
+    }
+
     // 対局の記録をSGFへ保存する。棋譜保存は対局結果の表示を妨げない補助機能のため、
     // 失敗しても例外は投げずerror.logに記録するのみとする。戻り値は保存先パス
     // (棋譜再生で読み直すために使う)。失敗時は空のパスを返す
@@ -719,6 +749,46 @@ namespace
             log << "SGFの保存に失敗しました: " << e.what() << std::endl;
             return {};
         }
+    }
+
+    // 対局終了処理をまとめる: SGF保存(モードに関わらず常に行う)に加え、レート戦の場合のみ
+    // 標準Elo式(9.6節参照)でuserRatingを更新しrating_history.txtへ1行追記する。カジュアルの
+    // 場合はレーティング関連の処理を丸ごとスキップする。結果文字列が未知の形式で勝敗を
+    // 判定できない場合もレーティングは更新せず、error.logに記録するのみとする(存在しない
+    // データを捏造しない)
+    std::filesystem::path FinalizeGameResult(const std::filesystem::path& gamesDir,
+        const std::filesystem::path& ratingPath, const std::vector<SgfMove>& moves,
+        const std::string& result, GameMode gameMode, RatingData& userRating)
+    {
+        const std::filesystem::path savedPath = SaveGameRecordSafely(gamesDir, moves, result);
+
+        if (gameMode != GameMode::Ranked)
+        {
+            return savedPath;
+        }
+
+        double actualScore = 0.0;
+        if (!TryParseBlackWinFraction(result, actualScore))
+        {
+            std::ofstream log("error.log", std::ios::app);
+            log << "未知の対局結果文字列のためレーティングを更新しませんでした: " << result << std::endl;
+            return savedPath;
+        }
+
+        userRating.Rating += ComputeEloDelta(userRating.Rating, kFixedOpponentRating, actualScore, kEloK);
+        userRating.GamesPlayed += 1;
+
+        try
+        {
+            AppendRatingEntry(ratingPath, BuildTimestamp(std::chrono::system_clock::now()), userRating.Rating, result);
+        }
+        catch (const std::exception& e)
+        {
+            std::ofstream log("error.log", std::ios::app);
+            log << "レーティング履歴の保存に失敗しました: " << e.what() << std::endl;
+        }
+
+        return savedPath;
     }
 
     // reviewMoveIndex手目までを空盤面から再生し、再生用盤面を作り直す
@@ -820,6 +890,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         const std::filesystem::path kataGoDir = ResolveAppDataPath(L"KataGo");
         const std::filesystem::path soundsDir = ResolveAppDataPath(L"Assets/Sounds");
         const std::filesystem::path gamesDir = ResolveAppDataPath(L"Games");
+        const std::filesystem::path ratingPath = ResolveAppDataPath(L"rating_history.txt");
 
         KurenaiEngine2D renderer(kWindowTitle, kWindowWidth, kWindowHeight, GraphicsAPI::DX11);
 
@@ -835,6 +906,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         std::vector<SgfMove> moveHistory;
         // 直近の対局終了時にSGFを保存したパス。GameOver中にVキーを押すとこれを読み込んで再生する
         std::filesystem::path lastSavedGamePath;
+
+        // 棋力の数値化(レーティング)。rating_history.txtから現在値を復元する。
+        // 対局モード(レート戦/カジュアル)はKataGo起動直後に1回だけ確認する(下記)
+        RatingData userRating = LoadRating(ratingPath);
+        GameMode currentGameMode = GameMode::Casual;
 
         // 棋譜再生(Reviewing)の状態
         SgfGameRecord reviewRecord;
@@ -918,6 +994,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             kataGoDir / L"gtp.cfg",
             kataGoDir / L"katago_stderr.log",
             kBoardLines);
+
+        // StartAsyncは非同期(専用ワーカースレッドでOpenCL初回チューニング等を行う)ため、
+        // ここでモード確認のモーダルを出してもKataGoの起動完了を待たせることにはならない
+        currentGameMode = (ShowMessageBoxUtf8(renderer.GetWindowHandle(),
+            "レート戦として対局しますか?(いいえ=カジュアル)\n"
+            "レート戦のみ、対局結果がレーティングに反映されます。",
+            "KurenaiGo", MB_YESNO | MB_ICONQUESTION) == IDYES)
+            ? GameMode::Ranked : GameMode::Casual;
 
         bool territoryOverlayEnabled = false;
         bool hintOverlayEnabled = false;
@@ -1079,8 +1163,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 if (resignPressed)
                 {
                     renderer.PlaySound(gameEndSound);
-                    lastSavedGamePath = SaveGameRecordSafely(gamesDir, moveHistory, "W+R");
-                    ShowMessageBoxUtf8("投了しました。KataGoの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
+                    lastSavedGamePath = FinalizeGameResult(gamesDir, ratingPath, moveHistory, "W+R", currentGameMode, userRating);
+                    ShowMessageBoxUtf8(renderer.GetWindowHandle(), "投了しました。KataGoの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
                     turnState = TurnState::GameOver;
                 }
                 else if (passPressed)
@@ -1121,14 +1205,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     if (result.Failed)
                     {
                         const std::string message = "KataGoとの通信でエラーが発生しました:\n" + kataGo.LastError();
-                        ShowMessageBoxUtf8(message, "KurenaiGo - KataGoエラー", MB_OK | MB_ICONERROR);
+                        ShowMessageBoxUtf8(renderer.GetWindowHandle(), message, "KurenaiGo - KataGoエラー", MB_OK | MB_ICONERROR);
                         turnState = TurnState::GameOver;
                     }
                     else if (result.IsResign)
                     {
                         renderer.PlaySound(gameEndSound);
-                        lastSavedGamePath = SaveGameRecordSafely(gamesDir, moveHistory, "B+R");
-                        ShowMessageBoxUtf8("KataGoが投了しました。あなたの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
+                        lastSavedGamePath = FinalizeGameResult(gamesDir, ratingPath, moveHistory, "B+R", currentGameMode, userRating);
+                        ShowMessageBoxUtf8(renderer.GetWindowHandle(), "KataGoが投了しました。あなたの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
                         turnState = TurnState::GameOver;
                     }
                     else if (result.IsPass)
@@ -1148,7 +1232,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     else if (!board.TryPlay(result.Row, result.Col, Stone::White))
                     {
                         // KataGoは常に合法手を返す前提のため、ここに来るのは想定外の異常事態
-                        ShowMessageBoxUtf8("KataGoの着手を反映できませんでした(想定外の座標)。",
+                        ShowMessageBoxUtf8(renderer.GetWindowHandle(), "KataGoの着手を反映できませんでした(想定外の座標)。",
                             "KurenaiGo - エラー", MB_OK | MB_ICONERROR);
                         turnState = TurnState::GameOver;
                     }
@@ -1168,9 +1252,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 if (kataGo.TryGetFinalScore(score))
                 {
                     renderer.PlaySound(gameEndSound);
-                    lastSavedGamePath = SaveGameRecordSafely(gamesDir, moveHistory, score);
+                    lastSavedGamePath = FinalizeGameResult(gamesDir, ratingPath, moveHistory, score, currentGameMode, userRating);
                     const std::string message = "対局終了\n結果: " + score;
-                    ShowMessageBoxUtf8(message, "KurenaiGo - 対局終了", MB_OK | MB_ICONINFORMATION);
+                    ShowMessageBoxUtf8(renderer.GetWindowHandle(), message, "KurenaiGo - 対局終了", MB_OK | MB_ICONINFORMATION);
                     turnState = TurnState::GameOver;
                 }
                 break;
@@ -1276,7 +1360,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 DrawLossGraph(renderer, width, height, reviewWinrateCache, reviewHasCached, reviewMoveIndex);
             }
             DrawHud(renderer, layout, turnState, displayBoard,
-                reviewMoveIndex, static_cast<int>(reviewRecord.Moves.size()), reviewRecord.Result);
+                reviewMoveIndex, static_cast<int>(reviewRecord.Moves.size()), reviewRecord.Result,
+                userRating.Rating, currentGameMode);
 
             // 着手以外の操作ボタンを盤下のボタン行に描画する
             for (size_t i = 0; i < buttonRects.size(); ++i)
@@ -1301,7 +1386,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
     {
         std::ofstream log("error.log", std::ios::app);
         log << e.what() << std::endl;
-        ShowMessageBoxUtf8(e.what(), "KurenaiGo - エラー", MB_OK | MB_ICONERROR);
+        ShowMessageBoxUtf8(nullptr, e.what(), "KurenaiGo - エラー", MB_OK | MB_ICONERROR);
         exitCode = 1;
     }
 

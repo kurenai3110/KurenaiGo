@@ -137,7 +137,8 @@
     <li><a href="#katago">7. KataGo連携(KataGoClient)</a></li>
     <li><a href="#analysis">8. 解析結果の可視化(勝率・地合い・着手ヒント)</a></li>
     <li><a href="#sgf">9. 棋譜の保存・再生(SGF)</a></li>
-    <li><a href="#future">10. 今後の課題</a></li>
+    <li><a href="#rating">10. 棋力の数値化(レーティング)</a></li>
+    <li><a href="#future">11. 今後の課題</a></li>
   </ol>
 </nav>
 
@@ -150,8 +151,9 @@
 <a href="https://github.com/lightvector/katago">KataGo</a>をGTP(Go Text Protocol)経由の
 子プロセスとして起動しての対局(人間=黒、KataGo=白)までを実装しています。あわせて、
 <code>kata-analyze</code>による局面解析を使った勝率表示・地合い可視化・着手ヒント(8章)、
-棋譜(SGF)の自動保存・再生・再生中の解析表示と損失グラフ(9章)も実装済みです。色の選択・
-ハンディキャップ・対局のリスタートは未実装です(10章参照)。
+棋譜(SGF)の自動保存・再生・再生中の解析表示と損失グラフ(9章)、レート戦/カジュアルの
+対局モード分けと棋力の数値化(レーティング、10章)も実装済みです。色の選択・
+ハンディキャップ・対局のリスタートは未実装です(11章参照)。
 </p>
 </section>
 
@@ -519,7 +521,7 @@ KataGoは1件ずつしかリクエストを処理できない設計のため、�
 (<code>KataGoClient::ToVertex</code>と同じA〜T(<code>I</code>を除く)+行番号の表記)で文中に
 添えます。この閾値はKataGoを使った解析ツールで一般的に用いられる目安を参考にした一例であり、
 手筋の正しさを厳密に判定するものではありません(死活・シチョウ・ヨセ等の詳細な分類は今後の
-課題とし、10章参照)。
+課題とし、11章参照)。
 </p>
 <p>
 言語化には着手<strong>前</strong>の局面の評価・最有力候補手も必要なため、
@@ -537,11 +539,95 @@ KataGoは1件ずつしかリクエストを処理できない設計のため、�
 </p>
 </section>
 
+<section id="rating">
+<h2>10. 棋力の数値化(レーティング)</h2>
+<p>
+<code>KurenaiGo::Rating</code>(<code>Source/Rating.h/.cpp</code>)は、対局結果からユーザーの
+レーティング(棋力の数値化)を計算・永続化する。KataGo側の強さを調整する仕組みはまだ無く
+(12章参照)、常に一定の強さの相手として対局する前提のため、標準的なElo式を使い
+「固定強度の相手に対する、自分自身の対局結果の推移」を数値化する。
+</p>
+<pre><code>expected = 1 / (1 + 10^((opponentRating - userRating) / 400))
+newUserRating = userRating + K * (actualScore - expected)</code></pre>
+<p>
+<code>opponentRating</code>(AI側)・ユーザーの初期値はいずれも<code>kFixedOpponentRating</code>/
+<code>kInitialRating</code> = 1500(初期未評価プレイヤーの標準Elo初期値という一般的な慣習を
+流用した固定アンカー値)、<code>K</code>係数は<code>kEloK</code> = 32(Eloで広く使われる一般的な値)。
+<code>actualScore</code>は勝敗のみ(1.0=勝ち/0.0=負け/0.5=持碁)で、目差による重み付けは
+行わない(標準Elo外の独自ルールになるため採用していない)。
+</p>
+<div class="note">
+<p>
+<strong>実世界の段級位を表す値ではない</strong>: このレーティングは、KataGoの実力を
+「1500」と評価したという事実に基づく主張ではない。AIの強さを調整する機能が無いため、
+便宜上の固定アンカー値として1500を採用しているだけであり、あくまで同じ相手との対局結果の
+推移を追う指標である。
+</p>
+</div>
+<h3>10.1 対局モード(レート戦/カジュアル)</h3>
+<p>
+起動直後、<code>kataGo.StartAsync(...)</code>呼び出し直後・メインループに入る前の1回だけ
+「レート戦として対局しますか?」を確認する(<code>MB_YESNO</code>の<code>ShowMessageBoxUtf8</code>)。
+<code>StartAsync</code>は専用ワーカースレッドで動く非同期処理のため、この確認はKataGoの
+起動完了(OpenCL初回チューニング等で数十秒かかることがある)を待たせずに表示できる。
+選択結果は<code>GameMode::Ranked</code>/<code>GameMode::Casual</code>として対局中保持され、
+盤下のHUDに常時表示する。カジュアルを選んだ場合、SGFの保存(9章)は今まで通り行うが、
+レーティングの更新・履歴への追記は一切行わない。
+</p>
+<h3>10.2 対局結果文字列からの勝敗判定</h3>
+<p>
+対局終了時の結果文字列(<code>"W+R"</code>=人間の投了、<code>"B+R"</code>=KataGoの投了、
+または<code>final_score</code>の応答、例<code>"B+3.5"</code>)から、
+<code>TryParseBlackWinFraction</code>が黒番(人間)視点の勝敗を取り出す。
+<code>"B+"</code>で始まれば勝ち(1.0)、<code>"W+"</code>で始まれば負け(0.0)、
+<code>"0"</code>(持碁)は0.5とする。解釈できない文字列の場合はレーティングを更新せず
+<code>error.log</code>に記録するのみとする(存在しないデータを捏造しない)。
+</p>
+<h3>10.3 永続化(rating_history.txt)</h3>
+<p>
+現在値だけでなく対局を跨いだ推移を追えるよう、レート戦の結果が出るたびに1行
+<strong>追記</strong>する履歴ファイルとして設計している(<code>rating_history.txt</code>、
+<code>ResolveAppDataPath</code>でexeと同じフォルダに解決)。1行のフォーマットは
+<code>&lt;YYYYMMDD_HHMMSS&gt; &lt;この対局後のレーティング&gt; &lt;対局結果文字列&gt;</code>
+(<code>BuildGameFileName</code>と同じ<code>put_time</code>呼び出しを流用したタイムスタンプ)。
+起動時は全行を読み、パースできた行数を対局数、最後の行の値を現在のレーティングとして復元する
+(<code>LoadRating</code>、ファイル不在・全行パース失敗時は初期値にフォールバックし例外は
+投げない)。今回のパスでは推移の記録のみを行い、グラフ等での可視化(9.4節の損失グラフに相当する
+もの)は未実装(11章参照)。
+</p>
+<h3>10.4 ダイアログのフォーカスに関する既知の癖(実機で検証)</h3>
+<div class="note">
+<p>
+<strong>owner未指定のMessageBoxWは閉じた後のフォーカスの戻り先が不定になる</strong>:
+本アプリの<code>ShowMessageBoxUtf8</code>は元々すべての呼び出しで<code>owner</code>に
+<code>nullptr</code>を渡していたが、この場合ダイアログは所有者を持たない独立したトップレベル
+ウィンドウになり、ダイアログを閉じた後にキーボードフォーカスがメインウィンドウへ確実に
+戻る保証が無いことを実機検証で確認した(<code>PostMessage</code>で送った
+<code>WM_KEYDOWN</code>/<code>WM_KEYUP</code>がメインウィンドウのウィンドウプロシージャには
+届くものの、キー入力状態としては一切反映されなくなる現象として現れる)。対局モード確認
+ダイアログの直後にキー入力(投了等)を受け付ける必要があるため、この節の実装にあたって
+<code>ShowMessageBoxUtf8</code>に<code>HWND owner</code>引数を追加し、メインループ内の
+呼び出し箇所はすべて<code>renderer.GetWindowHandle()</code>を渡すよう修正した(アプリ全体の
+既存のダイアログにも同じ問題があった可能性があり、あわせて修正している)。唯一、
+<code>wWinMain</code>最外周の致命的エラーハンドラ(<code>renderer</code>自体の構築に
+失敗した場合にも実行され得る)だけは<code>renderer</code>が有効とは限らないため
+<code>nullptr</code>のままとしている。
+</p>
+</div>
+</section>
+
 <section id="future">
-<h2>10. 今後の課題</h2>
+<h2>11. 今後の課題</h2>
 <ul>
-<li>棋力の数値化(レーティング)・棋力に応じたAIの強さ設定</li>
-<li>苦手分野の解析(複数対局のSGFを跨いだ集計。9.5節の悪手判定ロジックを土台にする想定)</li>
+<li>棋力に応じたAIの強さ設定(レーティング値を使って<code>kata-analyze</code>や
+<code>genmove</code>の設定を変える仕組み)</li>
+<li>着差による重み付け・複数対局を跨いだ苦手分野の解析(9.5節の悪手判定ロジックを
+土台にする想定)</li>
+<li>レート推移のグラフ描画(<code>rating_history.txt</code>へのデータ記録自体は10章で
+実装済みだが、可視化画面は未実装)</li>
+<li>着手の意味・役割そのものの言語化(「最善手級/やや損/緩着/悪手」という勝率変化ベースの
+判定(9.5節)に加えて、その手が「地を囲う手」「相手の石を攻める手」等、意図・役割まで
+言語化する。優先度は低い)</li>
 <li>色の選択(現在は人間=黒固定)・ハンディキャップ対局</li>
 <li>対局のリスタート(現在はアプリの再起動が必要)</li>
 <li>過去の複数対局から選んで読み込む機能(現状は直前の対局のみ)</li>
