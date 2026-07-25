@@ -956,6 +956,25 @@ KataGoの<code>humanSLProfile</code>が実際にサポートするのは20級〜
 <code>LayoutCasualRankGrid</code>)を追加したが、<code>ButtonSpec</code>/<code>ButtonRect</code>/
 <code>DrawButton</code>/<code>IsPointInButton</code>は右側縦列と共通のものをそのまま再利用している。
 </p>
+<div class="note">
+<p>
+<strong>ボタン文字の太字・中央揃えはKurenaiEngine側の機能追加後に反映</strong>: このUIの実装時点では
+<code>KurenaiEngine2D::DrawText</code>に太字指定・厳密な文字揃え・実測幅取得のいずれも無く、
+中央揃えは<code>EstimateTextWidth</code>という概算(半角文字はfontSizeの約0.55倍、全角文字は
+約1.0倍として文字ごとに幅を積算する)に頼らざるを得なかった。この制約はKurenaiEngine本体を
+変更せず<a href="https://github.com/kurenai3110/KurenaiEngine/issues/9">KurenaiEngine側にissueを
+起票する</a>だけに留め、その後別途<code>KurenaiEngine2D::DrawText</code>に<code>bold</code>引数・
+<code>TextAlign</code>/<code>TextVerticalAlign</code>引数・<code>MeasureText</code>関数が追加された
+(KurenaiEngineコミット<code>cff50d4</code>/<code>dba28e4</code>)。KurenaiGo側はこのサブモジュール
+更新を取り込んだ後、<code>DrawButton</code>の<code>EstimateTextWidth</code>による概算中央揃えを
+削除し、ボタン中心座標をそのまま<code>DrawText(centerX, centerY, label, fontSize, r, g, b, a,
+/*bold=*/true)</code>へ渡すだけの実測ベースの中央揃え(かつ太字)に置き換えた。align/verticalAlignの
+既定値がCenter/Middleに変更されたため、既存の他のDrawText呼び出し箇所(勝率テキスト・HUD・
+着手コメンタリー・苦手分野解析)は、従来の左下基準の見た目を保つため
+<code>TextAlign::Left</code>/<code>TextVerticalAlign::Bottom</code>を明示的に指定するよう
+あわせて修正した(指定しないとテキスト位置が意図せずずれるため)。
+</p>
+</div>
 <h4>11.6.3 <code>KataGoClient</code>の起動引数拡張</h4>
 <p>
 <code>StartAsync</code>/<code>LaunchProcess</code>に<code>humanModelPath</code>・

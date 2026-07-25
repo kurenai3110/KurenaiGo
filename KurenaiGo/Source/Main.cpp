@@ -448,7 +448,8 @@ namespace
              << L"   目差 " << (blackScoreLead >= 0.0f ? L"+" : L"") << std::setprecision(1) << blackScoreLead;
 
         renderer.DrawText(textX, textY, text.str(), kWinrateTextFontSize,
-            kWinrateTextColorR, kWinrateTextColorG, kWinrateTextColorB, 1.0f);
+            kWinrateTextColorR, kWinrateTextColorG, kWinrateTextColorB, 1.0f,
+            false, TextAlign::Left, TextVerticalAlign::Bottom);
     }
 
     // 棋譜再生中、その局面の解析がまだキャッシュされていない間に表示する代わりの文言
@@ -458,7 +459,8 @@ namespace
         const float textY = layout.CenterY + layout.BoardExtent * 0.5f + kWinrateBarMargin + kWinrateBarHeight +
             kWinrateTextMargin;
         renderer.DrawText(textX, textY, L"解析中...", kWinrateTextFontSize,
-            kWinrateTextColorR, kWinrateTextColorG, kWinrateTextColorB, 1.0f);
+            kWinrateTextColorR, kWinrateTextColorG, kWinrateTextColorB, 1.0f,
+            false, TextAlign::Left, TextVerticalAlign::Bottom);
     }
 
     // 着手の言語化: moveIndex手目の局面に至った手(record.Moves[moveIndex-1])について、
@@ -913,7 +915,8 @@ namespace
             BuildStatusText(turnState, board, reviewMoveIndex, reviewTotalMoves, reviewResult,
                 userRating, gameMode, aiTargetRating, isPlacementActive, placementEstimate, placementConvergenceRate,
                 postGameAnalysisActive, postGameAnalysisIndex, postGameAnalysisTotalMoves),
-            kHudFontSize, kHudColorR, kHudColorG, kHudColorB, 1.0f);
+            kHudFontSize, kHudColorR, kHudColorG, kHudColorB, 1.0f,
+            false, TextAlign::Left, TextVerticalAlign::Bottom);
     }
 
     // ボタン1個の識別子。着手以外の操作(パス・投了・地合い表示切替・着手ヒント表示切替・
@@ -998,19 +1001,6 @@ namespace
         float HoverColorR = kButtonHoverColorR, HoverColorG = kButtonHoverColorG, HoverColorB = kButtonHoverColorB;
         float BorderColorR = kButtonBorderColorR, BorderColorG = kButtonBorderColorG, BorderColorB = kButtonBorderColorB;
     };
-
-    // ラベル文字列のおおよその描画幅を見積もる。KurenaiEngine2Dは実測用のAPIを公開していないため、
-    // ASCII(半角)はfontSizeの約0.55倍、それ以外(かな漢字などの全角文字)は約1.0倍として概算する
-    float EstimateTextWidth(const std::wstring& text, float fontSize)
-    {
-        float width = 0.0f;
-        for (wchar_t ch : text)
-        {
-            const bool isHalfWidth = ch < 0x100;
-            width += fontSize * (isHalfWidth ? 0.55f : 1.0f);
-        }
-        return width;
-    }
 
     // ボタン仕様のリストを、画面右側のボタン列内でグループ別(Top=上詰め/Center=中央揃え/
     // Bottom=下詰め)に縦積みしたヒット領域のリストへ変換する。列幅いっぱいの固定幅ボタンにする
@@ -1217,17 +1207,17 @@ namespace
             r, g, b, 1.0f,
             kButtonBorderThickness, borderR, borderG, borderB, 1.0f);
 
-        const float textWidth = EstimateTextWidth(label, style.FontSize);
-        const float textX = centerX - textWidth * 0.5f;
-        const float textY = centerY - style.FontSize * 0.5f;
+        // KurenaiEngine2D::DrawTextはalign/verticalAlignの既定がCenter/Middleのため、
+        // ボタン中心(centerX, centerY)をそのまま渡すだけで実測幅に基づく正確な中央揃えになる
+        // (以前のEstimateTextWidthによる概算は不要になった)。太字(bold=true)で描画する
         if (button.Enabled)
         {
-            renderer.DrawText(textX, textY, label, style.FontSize, kButtonTextColorR, kButtonTextColorG, kButtonTextColorB, 1.0f);
+            renderer.DrawText(centerX, centerY, label, style.FontSize, kButtonTextColorR, kButtonTextColorG, kButtonTextColorB, 1.0f, true);
         }
         else
         {
-            renderer.DrawText(textX, textY, label, style.FontSize,
-                kButtonDisabledTextColorR, kButtonDisabledTextColorG, kButtonDisabledTextColorB, 1.0f);
+            renderer.DrawText(centerX, centerY, label, style.FontSize,
+                kButtonDisabledTextColorR, kButtonDisabledTextColorG, kButtonDisabledTextColorB, 1.0f, true);
         }
     }
 
@@ -1362,7 +1352,8 @@ namespace
         const float textX = kGraphMarginX;
         const float textY = static_cast<float>(windowHeight) - kCommentaryHeight * 0.5f - kCommentaryFontSize * 0.5f;
         renderer.DrawText(textX, textY, commentary, kCommentaryFontSize,
-            kCommentaryColorR, kCommentaryColorG, kCommentaryColorB, 1.0f);
+            kCommentaryColorR, kCommentaryColorG, kCommentaryColorB, 1.0f,
+            false, TextAlign::Left, TextVerticalAlign::Bottom);
     }
 
     // 損失グラフ(棋譜再生中のみ、盤上部のkGraphAreaHeight帯の下段に黒視点勝率の推移を描く)。
@@ -1495,7 +1486,8 @@ namespace
         float y = static_cast<float>(windowHeight) - lineHeight * 2.0f;
         for (const std::wstring& line : lines)
         {
-            renderer.DrawText(startX, y, line, fontSize, 0.9f, 0.9f, 0.9f, 1.0f);
+            renderer.DrawText(startX, y, line, fontSize, 0.9f, 0.9f, 0.9f, 1.0f,
+                false, TextAlign::Left, TextVerticalAlign::Bottom);
             y -= lineHeight;
         }
     }
