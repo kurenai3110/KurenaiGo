@@ -120,12 +120,12 @@ namespace
     constexpr float kWinrateBarMargin = 6.0f; // 盤の上端からバーまでの隙間
 
     // 勝率バーの下に表示する数値テキスト(勝率%・目差)の見た目
-    constexpr float kWinrateTextFontSize = 15.0f;
+    constexpr float kWinrateTextFontSize = 18.0f;
     constexpr float kWinrateTextMargin = 4.0f; // バーからテキストまでの隙間
     constexpr float kWinrateTextColorR = 0.90f, kWinrateTextColorG = 0.90f, kWinrateTextColorB = 0.88f;
 
     // 着手の言語化コメント(棋譜再生中のみ、kGraphAreaHeight帯の上段)の見た目
-    constexpr float kCommentaryFontSize = 15.0f;
+    constexpr float kCommentaryFontSize = 18.0f;
     constexpr float kCommentaryHeight = 34.0f; // 帯の上段としてこの高さ分を確保する
     constexpr float kCommentaryColorR = 0.92f, kCommentaryColorG = 0.90f, kCommentaryColorB = 0.75f;
 
@@ -157,14 +157,14 @@ namespace
     constexpr float kHintAlphas[kMaxHintMarkers] = { 0.85f, 0.70f, 0.55f };
 
     // 盤下の余白に表示するHUDテキストの見た目
-    constexpr float kHudFontSize = 18.0f;
+    constexpr float kHudFontSize = 21.0f;
     constexpr float kHudColorR = 0.92f, kHudColorG = 0.92f, kHudColorB = 0.90f;
 
     // 操作ボタン(パス・投了・地合い表示切替・着手ヒント表示切替・棋譜再生・終了等)の見た目。
     // 画面右側の縦列に、列幅いっぱいの固定幅で上から下へ積む
     constexpr float kButtonHeight = 40.0f;
     constexpr float kButtonSpacing = 10.0f; // ボタン間の縦の隙間
-    constexpr float kButtonFontSize = 16.0f;
+    constexpr float kButtonFontSize = 19.0f;
     // 通常時・ホバー時・トグルON時・無効時の背景色
     constexpr float kButtonColorR = 0.30f, kButtonColorG = 0.30f, kButtonColorB = 0.34f;
     constexpr float kButtonHoverColorR = 0.42f, kButtonHoverColorG = 0.42f, kButtonHoverColorB = 0.48f;
