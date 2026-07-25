@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include <atomic>
+#include <deque>
 #include <filesystem>
 #include <mutex>
 #include <string>
@@ -15,6 +16,33 @@ namespace KurenaiGo
 {
     // 対局のコミ。KataGoへの komi コマンドとSGF書き出し(KM プロパティ)の両方で使う唯一の値
     constexpr float kKomi = 6.5f;
+
+    // 一括解析(RequestBatchAnalysis)へ渡す1手ぶんの情報。SgfMove(Sgf.h)と同じ内容だが、
+    // Sgf.hがKataGoClient.hをincludeしているため循環参照を避けてこちらに定義する。
+    // 呼び出し側でSgfMove/moveHistoryの内容を詰め替えて渡す
+    struct KataGoPlayedMove
+    {
+        Stone Color = Stone::Empty;
+        bool IsPass = false;
+        int Row = -1; // IsPassがtrueなら未使用
+        int Col = -1;
+    };
+
+    // kata-analyzeを打ち切る条件。いずれかを満たした時点で停止する
+    struct AnalysisBudget
+    {
+        DWORD TargetMs = 600;   // この時間を過ぎたら(報告を1件でも受けていれば)停止する
+        DWORD HardCapMs = 1500; // 報告の有無によらず必ず停止する上限
+        int TargetVisits = 250; // 最有力候補(Order==0)のvisitsがこれに達したら停止する
+    };
+
+    // 対局中のライブ解析(勝率表示・地合い・着手ヒント)用の予算。従来の固定値をそのまま踏襲する
+    constexpr AnalysisBudget kLiveAnalysisBudget { 600, 1500, 250 };
+    // 一括解析(対局後の自動解析・棋譜再生前の解析)用の予算。ミス検出・勝率グラフに加え、
+    // 棋譜再生では地合い可視化・着手ヒントにも同じ結果を使う(9.4節)ため、ライブ用と同じく
+    // ownershipも取得する。1局面ごとの絶対精度までは要らないため、時間/visits数はライブ用より
+    // 浅くして所要時間を短縮する
+    constexpr AnalysisBudget kBatchAnalysisBudget { 300, 800, 150 };
 
     // genmove の非同期結果
     struct KataGoMoveResult
@@ -48,6 +76,13 @@ namespace KurenaiGo
         // 空なら未取得
         std::vector<float> Ownership;
         std::vector<AnalysisMoveInfo> TopMoves; // Order昇順とは限らないため、利用側でソートする
+    };
+
+    // 一括解析(RequestBatchAnalysis)で1局面ぶんの解析が完了するたびにキューへ積まれる結果
+    struct BatchAnalysisItem
+    {
+        int MoveIndex = 0; // 0手目〜総手数。moves[0..MoveIndex)を再生した局面の解析結果
+        KataGoAnalysisResult Result;
     };
 
     // KataGo(katago.exe)を子プロセスとして起動し、GTP(Go Text Protocol)で対局するクライアント。
@@ -88,7 +123,8 @@ namespace KurenaiGo
         void PlayPass(Stone color);
 
         // KataGo側の盤面を空盤面へ戻す(同期呼び出し。clear_board応答は一瞬で返るため)。
-        // 棋譜再生で任意の手数の局面を解析させる前に、0手目から再生し直すために使う
+        // RequestBatchAnalysisは順方向専用で内部でclear_boardを1回だけ送るため、これは
+        // 現状呼ばれていないが、盤面を明示的に空へ戻したい場合のための汎用APIとして残している
         void ResetBoard();
 
         // genmoveを別スレッドで要求する。結果はTryGetGenMoveResultでポーリングする
@@ -101,9 +137,27 @@ namespace KurenaiGo
 
         // kata-analyzeによる局面解析を別スレッドで要求する。結果はTryGetAnalysisResultで
         // ポーリングする。対局進行には必須ではない補助情報のため、失敗してもRequestGenMove等の
-        // ように対局を止めることはなく、KataGoAnalysisResult::Failedで呼び出し側に通知するのみ
-        void RequestAnalysis(Stone colorToMove);
+        // ように対局を止めることはなく、KataGoAnalysisResult::Failedで呼び出し側に通知するのみ。
+        // budgetは対局中のライブ解析を想定した既定値(kLiveAnalysisBudget)
+        void RequestAnalysis(Stone colorToMove, const AnalysisBudget& budget = kLiveAnalysisBudget);
         bool TryGetAnalysisResult(KataGoAnalysisResult& outResult);
+
+        // moves全体を0手目から末尾まで順に解析する。順方向にしか進まないためclear_boardは
+        // 最初の1回だけで、以降は1手ずつplayして局面を進める(従来のように毎局面で
+        // 0手目から全再生し直すO(n²)を避け、played手数nに対してO(n)にする)。
+        // 盤面再生もこのワーカースレッド内で行うため描画ループを止めない。
+        // moves自体は値渡しでワーカーへ移す(呼び出し側の寿命に依存しない)
+        void RequestBatchAnalysis(std::vector<KataGoPlayedMove> moves, const AnalysisBudget& budget);
+        // 解析が終わった局面を古い手数から順に1件取り出す(取り出した分はキューから消える)。
+        // 毎フレーム呼び、取れるだけ取り出してドレインする想定
+        bool TryPopBatchAnalysisItem(BatchAnalysisItem& outItem);
+        // RequestBatchAnalysisが実行中(まだ全局面を解析し終えていない)かどうか
+        bool IsBatchAnalysisRunning() const { return m_BatchRunning.load(); }
+        // 実行中の一括解析を中断する。現在解析中の1局面ぶんはHardCapMsを上限に完了を待ってから
+        // 停止するため、呼び出し後すぐにIsBatchAnalysisRunningがfalseになるとは限らない。
+        // 新規対局の開始・KataGoClientの再起動(StartAsync)・アプリ終了の前に必ず呼ぶこと
+        // (呼ばずに次の要求を送ると、その要求の完了までブロックされる)
+        void CancelBatchAnalysis() { m_BatchCancel.store(true); }
 
         const std::string& LastError() const { return m_LastError; }
 
@@ -119,9 +173,9 @@ namespace KurenaiGo
         // GTPがエラー("?")を返した場合は例外を投げる
         std::string Exchange(const std::string& command);
 
-        // kata-analyzeを送信し、一定時間/visits数だけストリーミング報告を受け取ってから停止し、
+        // kata-analyzeを送信し、budgetの条件を満たすまでストリーミング報告を受け取ってから停止し、
         // 最後に受け取った報告をパースして返す(詳細はKataGoClient.cpp冒頭のコメント参照)
-        KataGoAnalysisResult ExchangeAnalyze(Stone colorToMove);
+        KataGoAnalysisResult ExchangeAnalyze(Stone colorToMove, const AnalysisBudget& budget);
         // kata-analyzeの1報告行("info move ... info move ... ownership ...")をパースする
         static void ParseAnalysisLine(const std::string& line, KataGoAnalysisResult& outResult);
 
@@ -152,6 +206,13 @@ namespace KurenaiGo
 
         std::atomic<bool> m_AnalysisReady { false };
         KataGoAnalysisResult m_AnalysisResult;
+
+        // 一括解析(RequestBatchAnalysis)の結果キュー。m_BatchMutexで保護し、
+        // ワーカースレッドがpush_back、TryPopBatchAnalysisItemがpop_frontする
+        std::mutex m_BatchMutex;
+        std::deque<BatchAnalysisItem> m_BatchQueue;
+        std::atomic<bool> m_BatchRunning { false };
+        std::atomic<bool> m_BatchCancel { false };
 
         std::string m_LastError;
     };

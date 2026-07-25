@@ -399,6 +399,22 @@ namespace
         return analysis.ColorToMove == Stone::Black ? analysis.ScoreLeadForColorToMove : -analysis.ScoreLeadForColorToMove;
     }
 
+    // TopMovesの中から最有力候補(Order==0)の座標を探す。見つからなければ(-1, -1)のまま
+    void FindBestMove(const KataGoAnalysisResult& analysis, int& outRow, int& outCol)
+    {
+        outRow = -1;
+        outCol = -1;
+        for (const AnalysisMoveInfo& move : analysis.TopMoves)
+        {
+            if (move.Order == 0)
+            {
+                outRow = move.Row;
+                outCol = move.Col;
+                return;
+            }
+        }
+    }
+
     // GTPの頂点表記(列はA〜T、Iを飛ばす。行は盤面下端から1始まり)と同じ慣習で座標を文字列化する。
     // KataGoClient::ToVertexと同じ変換則(row=0が盤面下端)
     std::wstring FormatVertex(int row, int col)
@@ -487,8 +503,7 @@ namespace
     }
 
     std::wstring BuildMoveCommentary(const SgfGameRecord& record, int moveIndex,
-        const std::vector<float>& winrateCache, const std::vector<int>& bestMoveRowCache,
-        const std::vector<int>& bestMoveColCache, const std::vector<bool>& hasCached)
+        const std::vector<KataGoAnalysisResult>& analysisCache, const std::vector<bool>& hasCached)
     {
         if (moveIndex <= 0 || moveIndex > static_cast<int>(record.Moves.size()))
         {
@@ -506,12 +521,17 @@ namespace
         const Stone mover = playedMove.Color;
 
         // 着手者視点の勝率(黒視点キャッシュを着手者視点へ変換)
-        const float winrateBefore = (mover == Stone::Black) ? winrateCache[beforeIndex] : 1.0f - winrateCache[beforeIndex];
-        const float winrateAfter = (mover == Stone::Black) ? winrateCache[afterIndex] : 1.0f - winrateCache[afterIndex];
+        const float blackWinrateBefore = ToBlackWinrate(analysisCache[beforeIndex]);
+        const float blackWinrateAfter = ToBlackWinrate(analysisCache[afterIndex]);
+        const float winrateBefore = (mover == Stone::Black) ? blackWinrateBefore : 1.0f - blackWinrateBefore;
+        const float winrateAfter = (mover == Stone::Black) ? blackWinrateAfter : 1.0f - blackWinrateAfter;
         const float deltaPercent = (winrateAfter - winrateBefore) * 100.0f;
 
+        int bestMoveRow = -1;
+        int bestMoveCol = -1;
+        FindBestMove(analysisCache[beforeIndex], bestMoveRow, bestMoveCol);
         const bool isBestMove = !playedMove.IsPass &&
-            bestMoveRowCache[beforeIndex] == playedMove.Row && bestMoveColCache[beforeIndex] == playedMove.Col;
+            bestMoveRow == playedMove.Row && bestMoveCol == playedMove.Col;
 
         std::wostringstream text;
         text << moveIndex << L"手目: ";
@@ -527,9 +547,9 @@ namespace
         text << L"(勝率 " << std::fixed << std::setprecision(1) << (winrateBefore * 100.0f) << L"%→"
              << (winrateAfter * 100.0f) << L"%)";
 
-        if (!isBestMove && bestMoveRowCache[beforeIndex] >= 0 && bestMoveColCache[beforeIndex] >= 0)
+        if (!isBestMove && bestMoveRow >= 0 && bestMoveCol >= 0)
         {
-            text << L"  最善手は " << FormatVertex(bestMoveRowCache[beforeIndex], bestMoveColCache[beforeIndex]) << L" でした";
+            text << L"  最善手は " << FormatVertex(bestMoveRow, bestMoveCol) << L" でした";
         }
 
         return text.str();
@@ -1358,9 +1378,9 @@ namespace
 
     // 損失グラフ(棋譜再生中のみ、盤上部のkGraphAreaHeight帯の下段に黒視点勝率の推移を描く)。
     // hasCached[i]がtrueの手数のみ値が有効(未解析の区間は線が途切れる)。
-    // winrateCache/hasCachedのサイズは総手数+1(0手目〜総手数)
+    // analysisCache/hasCachedのサイズは総手数+1(0手目〜総手数)
     void DrawLossGraph(KurenaiEngine2D& renderer, uint32_t windowWidth, uint32_t windowHeight,
-        const std::vector<float>& winrateCache, const std::vector<bool>& hasCached, int currentIndex)
+        const std::vector<KataGoAnalysisResult>& analysisCache, const std::vector<bool>& hasCached, int currentIndex)
     {
         const int totalMoves = static_cast<int>(hasCached.size()) - 1;
         if (totalMoves <= 0)
@@ -1397,8 +1417,8 @@ namespace
                 continue;
             }
             renderer.DrawLine(
-                xForIndex(i), yForWinrate(winrateCache[i]),
-                xForIndex(i + 1), yForWinrate(winrateCache[i + 1]),
+                xForIndex(i), yForWinrate(ToBlackWinrate(analysisCache[i])),
+                xForIndex(i + 1), yForWinrate(ToBlackWinrate(analysisCache[i + 1])),
                 kGraphLineThickness, kGraphLineColorR, kGraphLineColorG, kGraphLineColorB, 1.0f);
         }
 
@@ -1406,7 +1426,7 @@ namespace
         if (currentIndex >= 0 && currentIndex <= totalMoves && hasCached[static_cast<size_t>(currentIndex)])
         {
             renderer.DrawCircle(
-                xForIndex(currentIndex), yForWinrate(winrateCache[static_cast<size_t>(currentIndex)]),
+                xForIndex(currentIndex), yForWinrate(ToBlackWinrate(analysisCache[static_cast<size_t>(currentIndex)])),
                 kGraphMarkerRadius, kGraphMarkerColorR, kGraphMarkerColorG, kGraphMarkerColorB, 1.0f);
         }
     }
@@ -1613,17 +1633,26 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         // 苦手分野の解析(局面ごとの悪手率)。mistake_stats.txtから現在の集計を復元する。
         // レート戦の対局が終了するたびに、その対局の全手を自動解析して集計する(下記)
         MistakeStatsData mistakeStats = LoadMistakeStats(mistakeStatsPath);
+
+        // KataGoClientの一括解析(RequestBatchAnalysis)は同時に1件しか実行されないため、
+        // 現在実行中の一括解析がどちらの用途(対局後の自動解析/棋譜再生前の解析)向けかを
+        // ここで覚えておき、TryPopBatchAnalysisItemで受け取った結果をどちらのキャッシュへ
+        // 書き込むかの判定に使う
+        enum class BatchAnalysisPurpose { None, PostGame, Review };
+        BatchAnalysisPurpose activeBatchPurpose = BatchAnalysisPurpose::None;
+
         // 対局終了後の自動解析の状態。postGameAnalysisActiveの間は新規対局・棋譜再生を
         // ブロックする(KataGoの解析チャンネルを他の経路と競合させないため)
         bool postGameAnalysisActive = false;
         std::vector<SgfMove> postGameAnalysisMoves; // 解析対象(終了した対局のmoveHistoryのコピー)
         std::string postGameAnalysisSgfFileName;    // 集計の重複排除キーに使うSGFファイル名
-        int postGameAnalysisIndex = 0;              // 次に要求する手数
-        std::vector<float> postGameWinrateCache;    // サイズ = 総手数+1(黒視点)
+        int postGameAnalysisCompletedCount = 0;     // HUD表示用。解析が終わった局面数
+        // 手数ごとの解析結果の生キャッシュ(ColorToMove視点のまま)。サイズ = 総手数+1。
+        // postGameHasCached[i]がtrueの手数のみ有効な値を持つ。黒視点への変換は
+        // ToBlackWinrate等を都度呼ぶ(Ownership・TopMovesも含めて丸ごと保持するため、棋譜再生が
+        // このキャッシュを流用する際に地合い可視化・着手ヒントもそのまま使える、9.4節参照)
+        std::vector<KataGoAnalysisResult> postGameAnalysisCache;
         std::vector<bool> postGameHasCached;
-        std::vector<int> postGameBestMoveRowCache;  // その局面での最善候補手(着手の言語化と同様)
-        std::vector<int> postGameBestMoveColCache;
-        bool postGameAnalysisRequestPending = false; // 現在解析要求中かどうか
         // 「苦手分野」ボタンで ViewingMistakeStats に入る前の状態(GameOver/Reviewing)。
         // 「戻る」ボタンでここへ戻す
         TurnState statsReturnState = TurnState::GameOver;
@@ -1633,18 +1662,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         int reviewMoveIndex = 0;
         GoBoard reviewBoard(kDefaultBoardSize);
 
-        // 棋譜再生中の局面ごとの解析結果キャッシュ(黒視点に変換済み)。要素数は総手数+1
-        // (0手目〜総手数)。reviewHasCached[i]がtrueの手数のみ有効な値を持つ。
-        // reviewBestMoveRow/ColCacheはその局面での最善候補手(Order==0)の座標(未取得時は-1)で、
-        // 着手の言語化(実際の着手と比較する)に使う
-        std::vector<float> reviewWinrateCache;
-        std::vector<float> reviewScoreLeadCache;
-        std::vector<int> reviewBestMoveRowCache;
-        std::vector<int> reviewBestMoveColCache;
+        // 棋譜再生中の局面ごとの解析結果キャッシュ。postGameAnalysisCache/postGameHasCachedと
+        // 同じ形(手数ごとの生の解析結果)。棋譜再生開始時に一括解析され(直前の対局後解析と
+        // 同じ棋譜ならそのキャッシュを流用し、一括解析自体を省略する)、再生中の手の進退は
+        // このキャッシュを読むだけで完結する(KataGoへは一切問い合わせない)。地合い可視化・
+        // 着手ヒントもこのキャッシュのOwnership/TopMovesをそのまま使う
+        std::vector<KataGoAnalysisResult> reviewAnalysisCache;
         std::vector<bool> reviewHasCached;
-        // 解析要求中のreviewMoveIndex(-1なら要求なし)。KataGoClientは1件ずつしか処理しない
-        // 設計のため、前の解析が終わるまで次のreset/replayは送らない(描画ループを止めないため)
-        int reviewAnalysisPendingIndex = -1;
 
         // 解析(kata-analyze)の最新結果。対局中の勝率表示・地合い可視化・着手ヒントが共通で使う
         KataGoAnalysisResult latestAnalysis;
@@ -1663,50 +1687,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             kataGo.RequestAnalysis(Stone::Black);
         };
 
-        // targetIndex手目の局面をKataGoに解析させる(未キャッシュかつ現在解析要求中でない場合のみ)。
-        // KataGoの盤面をclear_boardしてから0手目〜targetIndex手目の直前まで再生し直し、
-        // その局面の解析を要求する。要求を送った場合はtrueを返す
-        const auto requestReviewAnalysisFor = [&](int targetIndex) -> bool
+        // moves(SgfMove)をKataGoPlayedMoveへ詰め替える(Sgf.hがKataGoClient.hをincludeしている
+        // ため、KataGoClient.h側にSgfMoveと同じ内容の構造体を独立に定義している。11章参照)
+        const auto ToPlayedMoves = [](const std::vector<SgfMove>& moves) -> std::vector<KataGoPlayedMove>
         {
-            if (reviewAnalysisPendingIndex != -1)
+            std::vector<KataGoPlayedMove> playedMoves;
+            playedMoves.reserve(moves.size());
+            for (const SgfMove& move : moves)
             {
-                return false;
+                playedMoves.push_back({ move.Color, move.IsPass, move.Row, move.Col });
             }
-            if (targetIndex < 0 || targetIndex >= static_cast<int>(reviewHasCached.size()) ||
-                reviewHasCached[static_cast<size_t>(targetIndex)])
-            {
-                return false;
-            }
-
-            kataGo.ResetBoard();
-            for (int i = 0; i < targetIndex; ++i)
-            {
-                const SgfMove& move = reviewRecord.Moves[static_cast<size_t>(i)];
-                if (move.IsPass)
-                {
-                    kataGo.PlayPass(move.Color);
-                }
-                else
-                {
-                    kataGo.PlayMove(move.Color, move.Row, move.Col);
-                }
-            }
-
-            const Stone colorToMove = (targetIndex == 0)
-                ? Stone::Black
-                : Opponent(reviewRecord.Moves[static_cast<size_t>(targetIndex - 1)].Color);
-            kataGo.RequestAnalysis(colorToMove);
-            reviewAnalysisPendingIndex = targetIndex;
-            return true;
-        };
-
-        // 現在の局面の解析を優先し、手が空いたら着手の言語化に使う1手前の局面も解析する
-        const auto triggerReviewAnalysisIfNeeded = [&]()
-        {
-            if (!requestReviewAnalysisFor(reviewMoveIndex) && reviewMoveIndex > 0)
-            {
-                requestReviewAnalysisFor(reviewMoveIndex - 1);
-            }
+            return playedMoves;
         };
 
         // 対局終了後(GameOver)または棋譜再生中(Reviewing)、あるいはアプリ起動直後に呼ぶ。
@@ -1759,10 +1750,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             turnState = TurnState::EngineStarting;
         };
 
-        // レート戦の対局が終了した直後に呼ぶ。終了した対局の全手を自動解析するため、
-        // moveHistoryのコピーを保持して対局後解析の状態を初期化する(実際の解析要求は
-        // 毎フレームのadvancePostGameAnalysisIfNeededが行う)。手が無い対局(開始直後の投了等)
-        // では何もしない
+        // レート戦の対局が終了した直後に呼ぶ。終了した対局の全手を一括解析する(11章参照)。
+        // 一括解析は0手目から末尾まで順方向にしか進まないため、clear_boardは内部で最初の
+        // 1回だけ送られ、以降は1手ずつplayして局面を進める(手が無い対局(開始直後の投了等)
+        // では何もしない)
         const auto beginPostGameAnalysis = [&](const std::filesystem::path& savedPath)
         {
             if (moveHistory.empty())
@@ -1771,59 +1762,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             }
             postGameAnalysisMoves = moveHistory;
             postGameAnalysisSgfFileName = savedPath.filename().string();
-            postGameAnalysisIndex = 0;
-            postGameWinrateCache.assign(postGameAnalysisMoves.size() + 1, 0.5f);
+            postGameAnalysisCompletedCount = 0;
+            postGameAnalysisCache.assign(postGameAnalysisMoves.size() + 1, KataGoAnalysisResult{});
             postGameHasCached.assign(postGameAnalysisMoves.size() + 1, false);
-            postGameBestMoveRowCache.assign(postGameAnalysisMoves.size() + 1, -1);
-            postGameBestMoveColCache.assign(postGameAnalysisMoves.size() + 1, -1);
-            postGameAnalysisRequestPending = false;
             postGameAnalysisActive = true;
-        };
-
-        // postGameAnalysisActiveの間、解析要求中でなければ次の手数の解析を要求する
-        // (requestReviewAnalysisForと同じ手順: ResetBoardしてから0手目から再生し直す)
-        const auto advancePostGameAnalysisIfNeeded = [&]()
-        {
-            if (!postGameAnalysisActive || postGameAnalysisRequestPending)
-            {
-                return;
-            }
-            if (postGameAnalysisIndex > static_cast<int>(postGameAnalysisMoves.size()))
-            {
-                postGameAnalysisActive = false;
-                return;
-            }
-
-            // 対局後の自動解析は補助機能のため、KataGoとの通信で何か問題が起きても
-            // (新規対局・棋譜再生をブロックしたまま止まってしまわないよう)ここで打ち切り、
-            // error.logに記録するのみとする
-            try
-            {
-                kataGo.ResetBoard();
-                for (int i = 0; i < postGameAnalysisIndex; ++i)
-                {
-                    const SgfMove& move = postGameAnalysisMoves[static_cast<size_t>(i)];
-                    if (move.IsPass)
-                    {
-                        kataGo.PlayPass(move.Color);
-                    }
-                    else
-                    {
-                        kataGo.PlayMove(move.Color, move.Row, move.Col);
-                    }
-                }
-                const Stone colorToMove = (postGameAnalysisIndex == 0)
-                    ? Stone::Black
-                    : Opponent(postGameAnalysisMoves[static_cast<size_t>(postGameAnalysisIndex - 1)].Color);
-                kataGo.RequestAnalysis(colorToMove);
-                postGameAnalysisRequestPending = true;
-            }
-            catch (const std::exception& e)
-            {
-                std::ofstream log("error.log", std::ios::app);
-                log << "対局後の自動解析を中断しました: " << e.what() << std::endl;
-                postGameAnalysisActive = false;
-            }
+            activeBatchPurpose = BatchAnalysisPurpose::PostGame;
+            kataGo.RequestBatchAnalysis(ToPlayedMoves(postGameAnalysisMoves), kBatchAnalysisBudget);
         };
 
         bool territoryOverlayEnabled = false;
@@ -2060,74 +2004,90 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 }
             }
 
-            // 解析結果のポーリング。要求元(通常の対局中/棋譜再生中)に応じて振り分ける
+            // ライブ解析(対局中、RequestAnalysisで要求したもの)の結果をポーリングする
             KataGoAnalysisResult polledAnalysis;
             if (kataGo.TryGetAnalysisResult(polledAnalysis))
             {
-                if (reviewAnalysisPendingIndex != -1)
+                latestAnalysis = polledAnalysis;
+                hasAnalysis = !latestAnalysis.Failed;
+
+                // 初期レーティング決定(プレースメント)モード中は、黒(人間)の手番ごとの
+                // 勝率を追跡する(10.4節参照)。TryGetAnalysisResultは同じ結果を読み出す
+                // たびtrueを返し続けるため、この手番でまだサンプリングしていない場合のみ
+                // 実行する。ある程度収束したと判定されたら、対局の自然な終了を待たず
+                // その場でレーティングを確定し対局を終了する(この時点でturnStateは
+                // 必ずHumanToMove。RequestAnalysis(Stone::Black)はenterHumanToMoveでのみ
+                // 呼んでいるため)
+                if (hasAnalysis && placementTracker.Active && !placementSampledForCurrentTurn)
                 {
-                    if (!polledAnalysis.Failed &&
-                        reviewAnalysisPendingIndex < static_cast<int>(reviewHasCached.size()))
+                    placementSampledForCurrentTurn = true;
+                    const bool converged = placementTracker.Update(latestAnalysis.WinrateForColorToMove);
+                    if (converged)
                     {
-                        const size_t index = static_cast<size_t>(reviewAnalysisPendingIndex);
-                        reviewWinrateCache[index] = ToBlackWinrate(polledAnalysis);
-                        reviewScoreLeadCache[index] = ToBlackScoreLead(polledAnalysis);
-
-                        int bestRow = -1;
-                        int bestCol = -1;
-                        for (const AnalysisMoveInfo& move : polledAnalysis.TopMoves)
+                        finalizePlacementRating();
+                        renderer.PlaySound(gameEndSound);
+                        lastSavedGamePath = FinalizeGameResult(gamesDir, CurrentRatingPath(), moveHistory, "Void",
+                            currentGameMode, currentAiTargetRating, isCurrentGamePlacement, CurrentUserRating(), currentBoardSize);
+                        if (currentGameMode == GameMode::Ranked)
                         {
-                            if (move.Order == 0)
-                            {
-                                bestRow = move.Row;
-                                bestCol = move.Col;
-                                break;
-                            }
+                            beginPostGameAnalysis(lastSavedGamePath);
                         }
-                        reviewBestMoveRowCache[index] = bestRow;
-                        reviewBestMoveColCache[index] = bestCol;
+                        const std::string message =
+                            "初期レーティングの推定が収束したため、対局を終了します。\n確定レーティング: " +
+                            std::to_string(std::lround(CurrentUserRating().Rating));
+                        ShowMessageBoxUtf8(renderer.GetWindowHandle(), message,
+                            "KurenaiGo - 初期レーティング確定", MB_OK | MB_ICONINFORMATION);
+                        turnState = TurnState::GameOver;
+                    }
+                }
+            }
 
+            // 一括解析(対局後の自動解析・棋譜再生前解析。11章参照)の結果を取り出せるだけ
+            // ドレインする。KataGoClient側は同時に1件しか一括解析を実行しないため、
+            // activeBatchPurposeで現在実行中の一括解析がどちらの用途かを判定して振り分ける。
+            // ワーカースレッドはMoveIndex昇順にキューへpushするため、ここも必ず昇順に届く
+            // (postGame側のミス分類が「1手前が解析済みか」に依存しているのはこの前提のため)
+            BatchAnalysisItem batchItem;
+            while (kataGo.TryPopBatchAnalysisItem(batchItem))
+            {
+                if (activeBatchPurpose == BatchAnalysisPurpose::Review)
+                {
+                    if (!batchItem.Result.Failed &&
+                        batchItem.MoveIndex < static_cast<int>(reviewHasCached.size()))
+                    {
+                        const size_t index = static_cast<size_t>(batchItem.MoveIndex);
+                        reviewAnalysisCache[index] = batchItem.Result;
                         reviewHasCached[index] = true;
                     }
-                    reviewAnalysisPendingIndex = -1;
                 }
-                else if (postGameAnalysisRequestPending)
+                else if (activeBatchPurpose == BatchAnalysisPurpose::PostGame)
                 {
                     // レート戦終局後の自動解析結果を受け取る(11章参照)。着手前後の勝率が
                     // 両方揃った時点でその着手を分類し、初めて見る手数のみ苦手分野の統計へ加算する
-                    if (!polledAnalysis.Failed &&
-                        postGameAnalysisIndex < static_cast<int>(postGameHasCached.size()))
+                    if (!batchItem.Result.Failed &&
+                        batchItem.MoveIndex < static_cast<int>(postGameHasCached.size()))
                     {
-                        const size_t index = static_cast<size_t>(postGameAnalysisIndex);
-                        postGameWinrateCache[index] = ToBlackWinrate(polledAnalysis);
+                        const size_t index = static_cast<size_t>(batchItem.MoveIndex);
+                        postGameAnalysisCache[index] = batchItem.Result;
                         postGameHasCached[index] = true;
-
-                        int bestRow = -1;
-                        int bestCol = -1;
-                        for (const AnalysisMoveInfo& move : polledAnalysis.TopMoves)
-                        {
-                            if (move.Order == 0)
-                            {
-                                bestRow = move.Row;
-                                bestCol = move.Col;
-                                break;
-                            }
-                        }
-                        postGameBestMoveRowCache[index] = bestRow;
-                        postGameBestMoveColCache[index] = bestCol;
 
                         if (index >= 1 && postGameHasCached[index - 1])
                         {
                             const SgfMove& playedMove = postGameAnalysisMoves[index - 1];
                             const Stone mover = playedMove.Color;
+                            const float blackWinrateBefore = ToBlackWinrate(postGameAnalysisCache[index - 1]);
+                            const float blackWinrateAfter = ToBlackWinrate(postGameAnalysisCache[index]);
                             const float winrateBefore = (mover == Stone::Black)
-                                ? postGameWinrateCache[index - 1] : 1.0f - postGameWinrateCache[index - 1];
+                                ? blackWinrateBefore : 1.0f - blackWinrateBefore;
                             const float winrateAfter = (mover == Stone::Black)
-                                ? postGameWinrateCache[index] : 1.0f - postGameWinrateCache[index];
+                                ? blackWinrateAfter : 1.0f - blackWinrateAfter;
                             const float deltaPercent = (winrateAfter - winrateBefore) * 100.0f;
+
+                            int bestMoveRowBefore = -1;
+                            int bestMoveColBefore = -1;
+                            FindBestMove(postGameAnalysisCache[index - 1], bestMoveRowBefore, bestMoveColBefore);
                             const bool isBestMove = !playedMove.IsPass &&
-                                postGameBestMoveRowCache[index - 1] == playedMove.Row &&
-                                postGameBestMoveColCache[index - 1] == playedMove.Col;
+                                bestMoveRowBefore == playedMove.Row && bestMoveColBefore == playedMove.Col;
 
                             const MoveQuality quality = ClassifyMoveQuality(deltaPercent, isBestMove);
                             const GamePhase phase = DeterminePhase(
@@ -2150,47 +2110,19 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                             }
                         }
                     }
-                    postGameAnalysisRequestPending = false;
-                    ++postGameAnalysisIndex;
-                }
-                else
-                {
-                    latestAnalysis = polledAnalysis;
-                    hasAnalysis = !latestAnalysis.Failed;
-
-                    // 初期レーティング決定(プレースメント)モード中は、黒(人間)の手番ごとの
-                    // 勝率を追跡する(10.4節参照)。TryGetAnalysisResultは同じ結果を読み出す
-                    // たびtrueを返し続けるため、この手番でまだサンプリングしていない場合のみ
-                    // 実行する。ある程度収束したと判定されたら、対局の自然な終了を待たず
-                    // その場でレーティングを確定し対局を終了する(この時点でturnStateは
-                    // 必ずHumanToMove。RequestAnalysis(Stone::Black)はenterHumanToMoveでのみ
-                    // 呼んでいるため)
-                    if (hasAnalysis && placementTracker.Active && !placementSampledForCurrentTurn)
-                    {
-                        placementSampledForCurrentTurn = true;
-                        const bool converged = placementTracker.Update(latestAnalysis.WinrateForColorToMove);
-                        if (converged)
-                        {
-                            finalizePlacementRating();
-                            renderer.PlaySound(gameEndSound);
-                            lastSavedGamePath = FinalizeGameResult(gamesDir, CurrentRatingPath(), moveHistory, "Void",
-                                currentGameMode, currentAiTargetRating, isCurrentGamePlacement, CurrentUserRating(), currentBoardSize);
-                            if (currentGameMode == GameMode::Ranked)
-                            {
-                                beginPostGameAnalysis(lastSavedGamePath);
-                            }
-                            const std::string message =
-                                "初期レーティングの推定が収束したため、対局を終了します。\n確定レーティング: " +
-                                std::to_string(std::lround(CurrentUserRating().Rating));
-                            ShowMessageBoxUtf8(renderer.GetWindowHandle(), message,
-                                "KurenaiGo - 初期レーティング確定", MB_OK | MB_ICONINFORMATION);
-                            turnState = TurnState::GameOver;
-                        }
-                    }
+                    ++postGameAnalysisCompletedCount;
                 }
             }
-
-            advancePostGameAnalysisIfNeeded();
+            // 一括解析が完了したら用途をNoneへ戻す(対局後の自動解析ならactiveフラグも下ろし、
+            // 新規対局・棋譜再生のボタンをブロック解除する)
+            if (activeBatchPurpose != BatchAnalysisPurpose::None && !kataGo.IsBatchAnalysisRunning())
+            {
+                if (activeBatchPurpose == BatchAnalysisPurpose::PostGame)
+                {
+                    postGameAnalysisActive = false;
+                }
+                activeBatchPurpose = BatchAnalysisPurpose::None;
+            }
 
             switch (turnState)
             {
@@ -2338,14 +2270,31 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         reviewMoveIndex = 0;
                         reviewBoard = GoBoard(reviewRecord.BoardSize);
                         hasAnalysis = false; // 直前の対局の解析結果を棋譜再生画面に持ち越さない
-                        reviewWinrateCache.assign(reviewRecord.Moves.size() + 1, 0.5f);
-                        reviewScoreLeadCache.assign(reviewRecord.Moves.size() + 1, 0.0f);
-                        reviewBestMoveRowCache.assign(reviewRecord.Moves.size() + 1, -1);
-                        reviewBestMoveColCache.assign(reviewRecord.Moves.size() + 1, -1);
-                        reviewHasCached.assign(reviewRecord.Moves.size() + 1, false);
-                        reviewAnalysisPendingIndex = -1;
+
+                        const size_t totalPositions = reviewRecord.Moves.size() + 1;
+                        // 直前の対局後解析(レート戦終局後、11章参照)が同じ棋譜を全局面解析済み
+                        // なら、それをそのまま流用して一括解析自体を省略する(棋譜再生は
+                        // lastSavedGamePathを開くため、レート戦の直後はほぼ必ずこの経路になる)
+                        const bool canReusePostGameCache =
+                            postGameAnalysisSgfFileName == lastSavedGamePath.filename().string() &&
+                            postGameHasCached.size() == totalPositions &&
+                            std::all_of(postGameHasCached.begin(), postGameHasCached.end(),
+                                [](bool cached) { return cached; });
+
+                        if (canReusePostGameCache)
+                        {
+                            reviewAnalysisCache = postGameAnalysisCache;
+                            reviewHasCached = postGameHasCached;
+                        }
+                        else
+                        {
+                            reviewAnalysisCache.assign(totalPositions, KataGoAnalysisResult{});
+                            reviewHasCached.assign(totalPositions, false);
+
+                            activeBatchPurpose = BatchAnalysisPurpose::Review;
+                            kataGo.RequestBatchAnalysis(ToPlayedMoves(reviewRecord.Moves), kBatchAnalysisBudget);
+                        }
                         turnState = TurnState::Reviewing;
-                        triggerReviewAnalysisIfNeeded(); // 0手目の解析をすぐに開始する
                     }
                     catch (const std::exception& e)
                     {
@@ -2357,12 +2306,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 
             case TurnState::Reviewing:
             {
-                // reviewAnalysisPendingIndex != -1(解析要求中)の間はKataGoClientの
-                // ワーカースレッドがパイプI/Oのmutexを保持し続けるため、ここでResetBoard()を
-                // 呼ぶと解放されるまで描画ループが止まってしまう。requestReviewAnalysisForと
-                // 同じ理由で、解析要求中は新規対局の開始を1フレーム見送る
-                if (newGamePressed && reviewAnalysisPendingIndex == -1)
+                if (newGamePressed)
                 {
+                    // 一括解析が実行中なら中断する。CancelBatchAnalysis自体は非同期(要求を
+                    // 立てるだけ)だが、この後選び直す新規対局の開始時にKataGoClient::StartAsyncが
+                    // ワーカースレッドをjoinするため、中断しないままだと一括解析の残り全体が
+                    // 終わるまで描画ループが止まってしまう(KataGoClient.h参照)
+                    kataGo.CancelBatchAnalysis();
                     startNewGame();
                     break;
                 }
@@ -2380,35 +2330,34 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 }
                 if (indexChanged)
                 {
+                    // 棋譜再生開始時に全局面を一括解析済み(または対局後解析のキャッシュを
+                    // 流用済み)のため、ここではKataGoへ問い合わせず盤面を再計算するのみ
                     reviewBoard = ReplayMoves(reviewRecord.Moves, reviewMoveIndex, reviewRecord.BoardSize);
                 }
-                triggerReviewAnalysisIfNeeded();
                 break;
             }
             }
 
             const GoBoard& displayBoard = (turnState == TurnState::Reviewing) ? reviewBoard : board;
 
-            // 表示する勝率・目差の決定(通常の対局中は最新解析、棋譜再生中はその手数のキャッシュ)
-            bool haveWinrateToShow = false;
-            float displayBlackWinrate = 0.5f;
-            float displayBlackScoreLead = 0.0f;
+            // 表示に使う解析結果の決定(通常の対局中は最新解析、棋譜再生中はその手数のキャッシュ)。
+            // 地合い可視化・着手ヒント・勝率表示のすべてがこの1つのポインタを共通で使う
+            const KataGoAnalysisResult* activeAnalysis = nullptr;
             if (turnState == TurnState::Reviewing)
             {
                 if (reviewMoveIndex < static_cast<int>(reviewHasCached.size()) &&
                     reviewHasCached[static_cast<size_t>(reviewMoveIndex)])
                 {
-                    haveWinrateToShow = true;
-                    displayBlackWinrate = reviewWinrateCache[static_cast<size_t>(reviewMoveIndex)];
-                    displayBlackScoreLead = reviewScoreLeadCache[static_cast<size_t>(reviewMoveIndex)];
+                    activeAnalysis = &reviewAnalysisCache[static_cast<size_t>(reviewMoveIndex)];
                 }
             }
             else if (hasAnalysis)
             {
-                haveWinrateToShow = true;
-                displayBlackWinrate = ToBlackWinrate(latestAnalysis);
-                displayBlackScoreLead = ToBlackScoreLead(latestAnalysis);
+                activeAnalysis = &latestAnalysis;
             }
+            const bool haveWinrateToShow = activeAnalysis != nullptr;
+            const float displayBlackWinrate = haveWinrateToShow ? ToBlackWinrate(*activeAnalysis) : 0.5f;
+            const float displayBlackScoreLead = haveWinrateToShow ? ToBlackScoreLead(*activeAnalysis) : 0.0f;
 
             renderer.BeginFrame(kClearColorR, kClearColorG, kClearColorB);
             if (turnState == TurnState::ViewingMistakeStats)
@@ -2419,14 +2368,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             else
             {
                 DrawBoard(renderer, whiteTexture, layout, activeBoardSize);
-                if (hasAnalysis && territoryOverlayEnabled)
+                if (activeAnalysis && territoryOverlayEnabled)
                 {
-                    DrawTerritoryOverlay(renderer, displayBoard, layout, whiteTexture, latestAnalysis);
+                    DrawTerritoryOverlay(renderer, displayBoard, layout, whiteTexture, *activeAnalysis);
                 }
                 DrawStones(renderer, displayBoard, layout);
-                if (hasAnalysis && hintOverlayEnabled && turnState == TurnState::HumanToMove)
+                if (activeAnalysis && hintOverlayEnabled &&
+                    (turnState == TurnState::HumanToMove || turnState == TurnState::Reviewing))
                 {
-                    DrawMoveHints(renderer, layout, whiteTexture, latestAnalysis);
+                    DrawMoveHints(renderer, layout, whiteTexture, *activeAnalysis);
                 }
                 if (haveWinrateToShow)
                 {
@@ -2448,16 +2398,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         kTopPanelBorderThickness, kTopPanelBorderColorR, kTopPanelBorderColorG, kTopPanelBorderColorB, 1.0f);
 
                     const std::wstring commentary = BuildMoveCommentary(reviewRecord, reviewMoveIndex,
-                        reviewWinrateCache, reviewBestMoveRowCache, reviewBestMoveColCache, reviewHasCached);
+                        reviewAnalysisCache, reviewHasCached);
                     DrawMoveCommentary(renderer, height, commentary);
                     DrawLossGraph(renderer, static_cast<uint32_t>(layout.ContentWidth), height,
-                        reviewWinrateCache, reviewHasCached, reviewMoveIndex);
+                        reviewAnalysisCache, reviewHasCached, reviewMoveIndex);
                 }
                 DrawHud(renderer, layout, turnState, displayBoard,
                     reviewMoveIndex, static_cast<int>(reviewRecord.Moves.size()), reviewRecord.Result,
                     CurrentUserRating().Rating, currentGameMode, currentAiTargetRating,
                     placementTracker.Active, placementTracker.CurrentEstimate(), placementTracker.ConvergenceRate(),
-                    postGameAnalysisActive, postGameAnalysisIndex,
+                    postGameAnalysisActive, postGameAnalysisCompletedCount,
                     static_cast<int>(postGameAnalysisMoves.size()));
             }
 
@@ -2507,6 +2457,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 
             renderer.EndFrame(true);
         }
+
+        // アプリ終了時、一括解析が実行中のまま残っているとkataGoのデストラクタが
+        // ワーカースレッドのjoinで完了まで待ってしまう(数秒〜対局全体の解析時間ぶん)ため、
+        // ここで中断を要求してから抜ける(KataGoClient.h CancelBatchAnalysis参照)
+        kataGo.CancelBatchAnalysis();
     }
     catch (const std::exception& e)
     {

@@ -370,6 +370,18 @@ falseに戻ってしまう(ホバー判定だけが効かなくなる)ことを�
 (<code>time_settings 0 5 1</code>で最大5秒/手)がかかるため、いずれも専用スレッドで実行します。
 メインの描画ループは<code>TryGetGenMoveResult</code>等のポーリングで結果を受け取るだけなので、
 KataGoが応答を返すまでの間もウィンドウは応答なしにならず、盤面の再描画・リサイズ処理を続けられます。
+これらはすべて単一の<code>m_WorkerThread</code>を共有しており(新しい要求を送る前に前の
+スレッドを<code>join</code>してから作り直す)、同時に実行されるKataGoとのやり取りは常に
+1つだけです。
+</p>
+<p>
+複数局面をまとめて解析する<code>RequestBatchAnalysis</code>(9.4節・12.3節参照)も同じ
+<code>m_WorkerThread</code>上で動きますが、他の要求と違い1回の呼び出しで<code>clear_board</code>
+1回+<code>play</code>/<code>kata-analyze</code>を局面数ぶん繰り返すため、対局全体の解析には
+数十秒以上かかることがあります。そのため専用の中断API
+<code>CancelBatchAnalysis</code>を用意しており、実行中に新規対局やアプリ終了へ進む前に
+必ず呼び出して、次の<code>StartAsync</code>やデストラクタの<code>join</code>が長時間ブロックしない
+ようにしています。
 </p>
 <h3>7.2 座標変換</h3>
 <p>
@@ -438,12 +450,19 @@ scoreLead S ... order K ... pv ... [次のinfo move...] ownership &lt;361個の�
 </div>
 <h3>8.2 解析タイミングと打ち切り</h3>
 <p>
-解析は経過時間(目安600ms)または最有力手のvisits数(目安250)のいずれかに達し次第打ち切り、
-どちらも満たさない場合でも1500msでハードキャップします。応答が来るまでの間も
-<code>KataGoClient</code>の非同期パターン(<code>RequestAnalysis</code> /
-<code>TryGetAnalysisResult</code>のポーリング)により描画ループは止まりません。解析は
-対局進行に必須ではない補助情報のため、失敗しても<code>KataGoAnalysisResult::Failed</code>で
-通知するのみで、genmove失敗時のようなダイアログ表示・対局中断は行いません。
+解析は経過時間または最有力手のvisits数のいずれかに達し次第打ち切り、どちらも満たさない場合でも
+ハードキャップ時間で強制停止します。この打ち切り条件は<code>AnalysisBudget</code>構造体
+(<code>TargetMs</code>/<code>HardCapMs</code>/<code>TargetVisits</code>)としてまとめ、
+呼び出し側が用途に応じて選びます。対局中の黒番ごとのライブ解析(本節、
+<code>RequestAnalysis</code>の既定引数)は<code>kLiveAnalysisBudget</code>
+(600ms/1500ms/250visits)で、精度を優先しています。一方、棋譜再生前・対局後の一括解析
+(9.4節・12.3節の<code>RequestBatchAnalysis</code>)は局面数が多く1局面ごとの絶対精度よりも
+全体の所要時間を優先したいため、より浅い<code>kBatchAnalysisBudget</code>
+(300ms/800ms/150visits)を使います。応答が来るまでの間も<code>KataGoClient</code>の
+非同期パターン(<code>RequestAnalysis</code> / <code>TryGetAnalysisResult</code>のポーリング)
+により描画ループは止まりません。解析は対局進行に必須ではない補助情報のため、失敗しても
+<code>KataGoAnalysisResult::Failed</code>で通知するのみで、genmove失敗時のようなダイアログ
+表示・対局中断は行いません。
 </p>
 <h3>8.3 描画</h3>
 <table>
@@ -451,9 +470,19 @@ scoreLead S ... order K ... pv ... [次のinfo move...] ownership &lt;361個の�
 <tbody>
 <tr><td>勝率バー</td><td>盤の上マージンに、黒視点の勝率で2分割した横棒(黒側は暗色、白側は明色のスプライト)を常時表示</td></tr>
 <tr><td>地合い可視化(<code>T</code>キー)</td><td>石のない交点のみ、黒視点のownership値が閾値(0.15)を超えたら、黒地=青系・白地=赤系の半透明スプライトを重ねる</td></tr>
-<tr><td>着手ヒント(<code>H</code>キー)</td><td>候補手を<code>Order</code>昇順に並べ、上位3件を金・銀・銅の色分けマーカーで表示(黒の手番中のみ)</td></tr>
+<tr><td>着手ヒント(<code>H</code>キー)</td><td>候補手を<code>Order</code>昇順に並べ、上位3件を金・銀・銅の色分けマーカーで表示(黒の手番中、または棋譜再生中)</td></tr>
 </tbody>
 </table>
+<p>
+<code>DrawTerritoryOverlay</code>/<code>DrawMoveHints</code>はどちらも
+<code>const KataGoAnalysisResult&amp;</code>を1つ受け取るだけの状態を持たない関数のため、
+対局中のライブ解析結果(<code>latestAnalysis</code>)と棋譜再生中のキャッシュ済み結果
+(9.4節の<code>reviewAnalysisCache</code>)のどちらでもそのまま使えます。<code>Main.cpp</code>の
+描画ループは<code>const KataGoAnalysisResult* activeAnalysis</code>という1つのポインタに
+表示対象を集約し(対局中は<code>&amp;latestAnalysis</code>、棋譜再生中はその手数がキャッシュ済みなら
+<code>&amp;reviewAnalysisCache[reviewMoveIndex]</code>、それ以外は<code>nullptr</code>)、
+勝率バー・地合い可視化・着手ヒントの3つの表示判定をこの1箇所に統一しています。
+</p>
 </section>
 
 <section id="sgf">
@@ -498,26 +527,51 @@ SGFの座標は列→行の順でa〜s(0〜18)、行は盤面<strong>上端</str
 19路・数百手程度の対局であれば、ナビゲーションのたびに毎回再生し直すコストは無視できるため、
 差分更新は行っていません。この盤面再構築は表示専用で、9.4節のKataGo側の解析とは別経路です。
 </p>
-<h3>9.4 再生中の解析表示・損失グラフ</h3>
+<h3>9.4 棋譜再生開始時の一括解析・損失グラフ</h3>
 <p>
-棋譜再生中に着手位置(<code>reviewMoveIndex</code>)を動かすと、その局面をKataGoにも解析させます。
-対局中の<code>kataGo</code>(<code>KataGoClient</code>)は対局の最新局面を指したままのため、
-<code>KataGoClient::ResetBoard()</code>(<code>clear_board</code>を送るだけの同期呼び出し)で
-盤面を空にしてから、0手目から対象の手数の直前まで<code>PlayMove</code>/<code>PlayPass</code>で
-再生し直し、その局面の手番(0手目なら黒、それ以外は直前の手の<code>Opponent</code>)で
-<code>RequestAnalysis</code>を要求します(<code>Main.cpp</code>の<code>requestReviewAnalysisFor</code>)。
-呼び出し側の<code>triggerReviewAnalysisIfNeeded</code>は現在の手数を優先しつつ、手が空いていれば
-9.5節の言語化に使う1手前の局面もあわせて解析します。
+以前は<code>reviewMoveIndex</code>を動かすたびにその局面だけを都度解析しており、
+毎回<code>KataGoClient::ResetBoard()</code>(<code>clear_board</code>)+0手目からの
+<code>PlayMove</code>/<code>PlayPass</code>再生を行っていたため、手数<code>n</code>の局面へ
+たどり着くまでの累計コストがO(n²)になっていました。現在は<code>棋譜再生</code>ボタン
+(<code>V</code>キー)を押した時点で対局全体を1回だけ一括解析し、<strong>再生中の
+<code>←</code>/<code>→</code>によるナビゲーションはKataGoへ一切問い合わせません</strong>
+(<code>ReplayMoves</code>による盤面再構築はローカルの<code>GoBoard</code>再計算のみで、
+9.3節の通りKataGo側の状態とは無関係です)。
 </p>
 <p>
-解析結果は手数ごとに<code>reviewWinrateCache</code>/<code>reviewScoreLeadCache</code>
-(黒視点に変換済み)へキャッシュし、一度解析した手数を再訪した場合は即座に表示します。
-KataGoは1件ずつしかリクエストを処理できない設計のため、解析要求中
-(<code>reviewAnalysisPendingIndex != -1</code>)は次のreset/replayを送らず、前の解析が
-終わるまで待ちます。これにより素早く連続してナビゲーションしても描画ループがブロックされることは
-ありません(ただし、初めて訪れる手数は解析(通常600ms〜1.5秒)+再生コストの分だけ表示が
-遅れます。数百手を再生し直す場合、再生自体も同期呼び出しのため体感できる遅延が出ることがあります
-が、リアルタイム対局とは異なる「棋譜再生」機能として許容範囲と判断しています)。
+一括解析は<code>KataGoClient::RequestBatchAnalysis(moves, budget)</code>
+(<code>Source/KataGoClient.h/.cpp</code>)が担います。0手目から末尾まで<strong>順方向にしか
+進まない</strong>という制約を設けることで、<code>clear_board</code>はワーカースレッド開始時に
+1回だけ送り、以降は1手ずつ<code>play</code>してから<code>kata-analyze</code>を要求する
+(局面数<code>n</code>に対して<code>play</code>の往復がO(n))という単純な実装にしています。
+解析が終わった局面から順に<code>BatchAnalysisItem</code>(手数+解析結果)を内部キューへ積み、
+呼び出し側は<code>TryPopBatchAnalysisItem</code>で毎フレーム取り出せるだけ取り出します
+(キューはワーカースレッドが手数の昇順にしか積まないため、取り出し順も必ず昇順になります)。
+一括解析には8.2節の<code>kBatchAnalysisBudget</code>(ライブ解析より浅い予算)を使いますが、
+<code>ownership</code>の取得自体はライブ解析と同じく常に行います(地合い可視化・着手ヒントが
+棋譜再生でも表示できるようにするため、下記参照)。
+</p>
+<p>
+<code>GameOver</code>から直前のレート戦の棋譜を再生する場合(12.3節の対局後の自動解析が
+同じSGFファイルを既に全局面解析済みのケースで、実際にはこれが大半)は、
+<code>postGameAnalysisCache</code>をそのまま<code>reviewAnalysisCache</code>へコピーするだけで
+再生を開始し、<code>RequestBatchAnalysis</code>自体を呼びません。それ以外(カジュアル対局の
+直後、または直前の対局後解析が途中で失敗した場合)のみ一括解析を新たに要求します。
+</p>
+<p>
+解析結果は手数ごとに<code>std::vector&lt;KataGoAnalysisResult&gt; reviewAnalysisCache</code>
+(<code>ColorToMove</code>視点のまま、<code>Ownership</code>・<code>TopMoves</code>を含めて
+丸ごと保持)へキャッシュし、黒視点への変換は表示時に<code>ToBlackWinrate</code>等を都度呼びます。
+これにより8.3節の地合い可視化・着手ヒントも、対局中のライブ解析と同じ
+<code>DrawTerritoryOverlay</code>/<code>DrawMoveHints</code>関数へこのキャッシュの要素を
+そのまま渡すだけで棋譜再生中に表示できます(以前はこのキャッシュにWinrate/ScoreLead/最有力候補手
+の座標しか保持しておらず、Ownershipを捨てていたため、棋譜再生中は地合い可視化・着手ヒントの
+トグルボタン自体はあっても何も表示されない未実装状態でした)。<code>postGameAnalysisCache</code>
+(12.3節)も同じ<code>KataGoAnalysisResult</code>をそのまま保持する形にしているため、上記の
+キャッシュ流用がそのままコピー1回で成立します。一括解析が進行中の間にユーザーがナビゲーションしても
+描画ループは止まらず、まだキューから取り出せていない手数は「解析中...」(<code>DrawWinratePending</code>、
+9.5節の着手の言語化も同様)と表示され、バックグラウンドでの解析完了とともに順次確定表示へ
+切り替わります。
 </p>
 <p>
 解析結果の表示(<code>DrawWinrateText</code>)は対局中・再生中どちらでも同じ値
@@ -525,8 +579,8 @@ KataGoは1件ずつしかリクエストを処理できない設計のため、�
 「黒 62.3%  目差 +4.5」のように数値で表示します。損失グラフ(<code>DrawLossGraph</code>)は
 盤の上部に確保した帯(<code>kGraphAreaHeight</code>、対局中は空のまま)に、手数ごとの黒視点勝率を
 折れ線で描画します。キャッシュ済みの区間のみ線分を結ぶため、未解析の手数は線が途切れ、
-現在の手数には小さな丸印を表示します。全手数の一括先読みは行わず、訪れた手数だけ解析する
-遅延評価方式のため、グラフは棋譜を辿るにつれて徐々に完成していきます。
+現在の手数には小さな丸印を表示します。一括解析中はキューが埋まるにつれてグラフが徐々に
+完成していきます。
 </p>
 <h3>9.5 着手の言語化</h3>
 <p>
@@ -553,14 +607,13 @@ KataGoは1件ずつしかリクエストを処理できない設計のため、�
 課題とし、13章参照)。
 </p>
 <p>
-言語化には着手<strong>前</strong>の局面の評価・最有力候補手も必要なため、
-<code>requestReviewAnalysisFor(target)</code>という関数に一般化し、
-<code>triggerReviewAnalysisIfNeeded</code>は現在の手数を優先しつつ、要求が不要だった場合
-(=現在の手数はすでに解析要求済みか解析済み)に限り1手前の局面もあわせて要求します。KataGoは
-1件ずつしかリクエストを処理できないため、現在の手数の表示を遅らせてまで1手前を優先することは
-ありません。前後どちらかが未キャッシュの間は「解析中...」と表示します。最有力候補手の座標は
-<code>reviewBestMoveRowCache</code>/<code>reviewBestMoveColCache</code>として、勝率・目差の
-キャッシュ(9.4節)と同様に手数ごとにキャッシュします。
+言語化には着手<strong>前</strong>の局面の評価・最有力候補手も必要ですが、9.4節の一括解析は
+0手目から末尾まですべての局面をまとめて解析するため、個別に「1手前を優先して解析する」ような
+分岐は不要になりました。前後どちらかがまだキュー未到着(未キャッシュ)の間は「解析中...」と
+表示します。最有力候補手の座標は9.4節の<code>reviewAnalysisCache</code>から
+<code>FindBestMove</code>(<code>TopMoves</code>の中から<code>Order == 0</code>を探すだけの
+小さなヘルパー。この抽出は元々ここと12.3節の対局後解析の2箇所にほぼ同じループとして重複
+実装されていたため、共通化した)で都度求めます。
 </p>
 <p>
 このコメント表示の分だけ、盤上部の帯の高さ(<code>kGraphAreaHeight</code>)を90pxから130pxへ
@@ -585,17 +638,17 @@ KataGoは1件ずつしかリクエストを処理できない設計のため、�
 </p>
 <div class="note">
 <p>
-<strong><code>Reviewing</code>中は解析要求中(9.4節)を避けてから<code>ResetBoard()</code>を
-呼ぶ</strong>: 9.4節の通り<code>KataGoClient::ExchangeAnalyze</code>は解析中ずっと
-<code>m_IoMutex</code>を保持し続ける設計のため、解析要求中(<code>reviewAnalysisPendingIndex
-!= -1</code>)に<code>ResetBoard()</code>(内部で同期的に<code>Exchange("clear_board")</code>を
-呼ぶ)を呼ぶと、解析が終わるまで描画ループがブロックされてしまいます。これは
-<code>requestReviewAnalysisFor</code>が解析要求中の再要求を避けているのと同じ理由のため、
-<code>Reviewing</code>状態での<code>N</code>キー/ボタンは<code>reviewAnalysisPendingIndex ==
--1</code>の間だけ<code>startNewGame</code>を実行し、解析要求中は1フレーム見送ります(次に押した
-ときには解析が終わっているのが通常のため、実用上は連打すればすぐに反応します)。
-<code>GameOver</code>状態ではその時点で進行中のKataGoリクエストが無いため、この待ち合わせは
-不要です。
+<strong><code>Reviewing</code>中は<code>startNewGame</code>の前に一括解析を中断する</strong>:
+9.4節の一括解析(<code>RequestBatchAnalysis</code>)は対局全体で数十秒かかることがあり、
+<code>KataGoClient</code>は要求ごとに前のワーカースレッドを<code>join</code>してから
+作り直す設計のため(7.1節)、実行中のまま次の対局を選び進めて<code>KataGoClient::StartAsync</code>
+が呼ばれると、一括解析が最後まで終わるまで描画ループがブロックされてしまいます。そのため
+<code>Reviewing</code>状態での<code>N</code>キー/ボタンは<code>startNewGame</code>の直前に
+必ず<code>kataGo.CancelBatchAnalysis()</code>を呼びます。中断要求自体は非同期(フラグを
+立てるのみ)ですが、ワーカースレッドは現在解析中の1局面ぶん(最大でも<code>HardCapMs</code>)
+だけ待ってから抜けるため、待ち時間は数百ms程度に収まります。アプリ終了時も同様に、
+メインループを抜けた直後(<code>KataGoClient</code>のデストラクタが呼ばれる前)に
+<code>CancelBatchAnalysis</code>を呼んでいます(7.1節)。
 </p>
 </div>
 </section>
@@ -1091,32 +1144,41 @@ KataGoから得られる勝率という事実ベースの情報だけで判定�
 <p>
 棋譜再生(9.3節)への集計フックではなく、<strong>レート戦の対局が終了した時点で、
 その対局の全手を自動的に解析</strong>して集計する(カジュアル対局は対象外)。
-<code>FinalizeGameResult</code>呼び出し直後、レート戦の場合のみ
-<code>beginPostGameAnalysis</code>が終了した対局の<code>moveHistory</code>のコピーを保持して
-状態を初期化し、以後は毎フレーム<code>advancePostGameAnalysisIfNeeded</code>が
-<code>requestReviewAnalysisFor</code>(9.4節)と同じ手順(<code>ResetBoard</code>→0手目から
-再生し直す→<code>RequestAnalysis</code>)で1手ずつ解析要求を送る。着手前後の勝率が両方
-揃った時点でその着手を分類し、<code>mistake_stats.txt</code>への重複排除キー
+<code>FinalizeGameResult</code>呼び出し直後、レート戦の場合のみ<code>beginPostGameAnalysis</code>が
+終了した対局の<code>moveHistory</code>のコピーを保持して状態を初期化し、その場で
+<code>KataGoClient::RequestBatchAnalysis</code>(9.4節)を1回呼んで対局全体の解析を開始する。
+以前は毎フレーム<code>advancePostGameAnalysisIfNeeded</code>が1手ずつ
+<code>ResetBoard</code>→0手目から再生し直す、という手順を繰り返しており手数の2乗に比例する
+再生コストがかかっていたが、一括解析は<code>clear_board</code>を最初の1回だけ送り以降は
+1手ずつ<code>play</code>して進めるため、この再生コストは手数に対して線形になった。毎フレームは
+<code>TryPopBatchAnalysisItem</code>でキューから取り出せる分だけドレインし、着手前後の勝率が
+両方揃った時点でその着手を分類し、<code>mistake_stats.txt</code>への重複排除キー
 (<code>"&lt;SGFファイル名&gt;:&lt;手数&gt;"</code>)がまだ無ければ集計へ加算する。
 </p>
 <h3>12.4 解析完了までのブロック</h3>
 <p>
-1手あたり数百ms〜数秒かかり、数百手の対局では完了まで数分かかり得る。ユーザーの選択により、
-<strong>解析が完了するまで「新規対局」「棋譜再生」ボタン・<code>N</code>/<code>V</code>キーを
-無効化する</strong>(<code>ButtonSpec.Enabled</code>と各キー判定の両方で
-<code>postGameAnalysisActive</code>をガードする)。これにより、自動解析中に他の経路
-(新しい対局のライブ解析、棋譜再生の解析)がKataGoの解析チャンネルを同時に使うことが
-無くなるため、複数の要求元が競合する問題を考えずに済む(この自動解析だけが唯一の
-解析要求元になる)。HUDには「対局後の解析中 (42/183手)」のように進捗を表示する。
+一括解析には数秒〜数十秒かかる(9.4節の<code>kBatchAnalysisBudget</code>と手数に依存)。
+ユーザーの選択により、<strong>解析が完了するまで「新規対局」「棋譜再生」ボタン・
+<code>N</code>/<code>V</code>キーを無効化する</strong>(<code>ButtonSpec.Enabled</code>と
+各キー判定の両方で<code>postGameAnalysisActive</code>をガードする)。これにより、自動解析中に
+他の経路(新しい対局のライブ解析、棋譜再生の解析)がKataGoClientの一括解析枠を同時に使うことが
+無くなるため、複数の要求元が競合する問題を考えずに済む(この自動解析だけが唯一の一括解析の
+要求元になる。<code>Main.cpp</code>の<code>activeBatchPurpose</code>で「今どちらの用途の
+一括解析が実行中か」を追跡している)。HUDには「対局後の解析中 (42/183手)」のように進捗を表示する
+(<code>postGameAnalysisCompletedCount</code>を<code>TryPopBatchAnalysisItem</code>で取り出す
+たびに加算)。
 </p>
 <div class="note">
 <p>
 <strong>KataGo通信の失敗は解析を打ち切るのみで対局・アプリ全体を止めない</strong>:
 自動解析は補助機能であり、かつ完了までナビゲーションをブロックする設計のため、途中で
 KataGoとの通信が(何らかの理由で)失敗した場合にそのまま止まってしまうとブロックが解除
-されなくなる。そのため<code>advancePostGameAnalysisIfNeeded</code>のKataGo呼び出し全体を
-try/catchで囲み、例外時は<code>error.log</code>に記録したうえで
-<code>postGameAnalysisActive</code>をfalseに戻し、ブロックを解除する。
+されなくなる。そのため<code>KataGoClient::RequestBatchAnalysis</code>のワーカースレッド全体を
+try/catchで囲み、1局面ぶんの解析失敗は<code>BatchAnalysisItem::Result::Failed</code>を
+立てて次の局面へ進み、<code>clear_board</code>/<code>play</code>自体の通信エラー(プロセス
+終了等)のようなより致命的な失敗はそこで一括解析全体を打ち切る。いずれの場合も
+<code>KataGoClient::IsBatchAnalysisRunning()</code>は最終的にfalseになるため、
+<code>Main.cpp</code>側は<code>postGameAnalysisActive</code>をfalseに戻し、ブロックを解除する。
 </p>
 </div>
 <h3>12.5 永続化(mistake_stats.txt)</h3>
@@ -1149,7 +1211,10 @@ try/catchで囲み、例外時は<code>error.log</code>に記録したうえで
 <li><code>playoutDoublingAdvantage</code>・人間らしい打ち方(human-like SL profile等)を
 使ったより自然な弱め方(この<code>gtp.cfg</code>・このKataGoビルドでの対応状況を検証して
 いないため見送った)</li>
-<li>保存済み過去対局の遡及的な一括解析(12章の自動解析は新たに終了したレート戦のみが対象)</li>
+<li>保存済み過去対局の遡及的な一括解析(<code>KataGoClient::RequestBatchAnalysis</code>
+(9.4節・12.3節)という汎用の一括解析APIは用意できたが、それを呼び出すUI(過去のSGFを選んで
+解析する画面)がまだ無く、現状は新たに終了したレート戦(12章)と直前の対局の棋譜再生
+(9.4節)からしか使えない)</li>
 <li>苦手分野の推移をグラフ表示する機能(12章では集計結果のテキスト表示のみ)</li>
 <li>着差による重み付けを苦手分野の集計へ取り入れる(現状は勝率変化ベースの4段階分類のみ)</li>
 <li>レート推移のグラフ描画(<code>rating_history.txt</code>へのデータ記録自体は10章で

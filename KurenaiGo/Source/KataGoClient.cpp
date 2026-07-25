@@ -395,7 +395,7 @@ namespace KurenaiGo
         return true;
     }
 
-    void KataGoClient::RequestAnalysis(Stone colorToMove)
+    void KataGoClient::RequestAnalysis(Stone colorToMove, const AnalysisBudget& budget)
     {
         if (m_WorkerThread.joinable())
         {
@@ -403,13 +403,13 @@ namespace KurenaiGo
         }
         m_AnalysisReady.store(false);
 
-        m_WorkerThread = std::thread([this, colorToMove]()
+        m_WorkerThread = std::thread([this, colorToMove, budget]()
         {
             KataGoAnalysisResult result;
             result.ColorToMove = colorToMove;
             try
             {
-                result = ExchangeAnalyze(colorToMove);
+                result = ExchangeAnalyze(colorToMove, budget);
             }
             catch (const std::exception& e)
             {
@@ -430,6 +430,98 @@ namespace KurenaiGo
             return false;
         }
         outResult = m_AnalysisResult;
+        return true;
+    }
+
+    void KataGoClient::RequestBatchAnalysis(std::vector<KataGoPlayedMove> moves, const AnalysisBudget& budget)
+    {
+        if (m_WorkerThread.joinable())
+        {
+            m_WorkerThread.join();
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_BatchMutex);
+            m_BatchQueue.clear();
+        }
+        m_BatchCancel.store(false);
+        m_BatchRunning.store(true);
+
+        m_WorkerThread = std::thread([this, moves = std::move(moves), budget]()
+        {
+            // 順方向専用: clear_boardは最初の1回だけ送り、以降は1手ずつplayして局面を進める。
+            // 従来の「毎局面でclear_board+全再生」に比べ、playの往復が局面数nに対してO(n)になる
+            // (詳細はKataGoClient.h RequestBatchAnalysisのコメント参照)
+            try
+            {
+                Exchange("clear_board");
+
+                for (size_t i = 0; i <= moves.size(); ++i)
+                {
+                    if (m_BatchCancel.load())
+                    {
+                        break;
+                    }
+
+                    if (i > 0)
+                    {
+                        const KataGoPlayedMove& move = moves[i - 1];
+                        if (move.IsPass)
+                        {
+                            Exchange(std::string("play ") + ToGtpColorChar(move.Color) + " pass");
+                        }
+                        else
+                        {
+                            Exchange(std::string("play ") + ToGtpColorChar(move.Color) + " " +
+                                ToVertex(move.Row, move.Col));
+                        }
+                    }
+
+                    if (m_BatchCancel.load())
+                    {
+                        break;
+                    }
+
+                    const Stone colorToMove = (i == 0) ? Stone::Black : Opponent(moves[i - 1].Color);
+                    BatchAnalysisItem item;
+                    item.MoveIndex = static_cast<int>(i);
+                    try
+                    {
+                        item.Result = ExchangeAnalyze(colorToMove, budget);
+                    }
+                    catch (const std::exception& e)
+                    {
+                        // 1局面の解析失敗は致命的ではないため、Failedを立てて次の局面へ進む
+                        // (対局後解析・棋譜再生前解析のどちらも補助機能のため、途中の1局面が
+                        // 欠けても残りを止めない)
+                        item.Result = KataGoAnalysisResult{};
+                        item.Result.ColorToMove = colorToMove;
+                        item.Result.Failed = true;
+                        m_LastError = e.what();
+                    }
+
+                    std::lock_guard<std::mutex> lock(m_BatchMutex);
+                    m_BatchQueue.push_back(std::move(item));
+                }
+            }
+            catch (const std::exception& e)
+            {
+                // clear_board/play自体の通信エラー(プロセス終了等)は致命的なため、
+                // ここで一括解析全体を打ち切る。呼び出し側はキューに届いた分だけを使う
+                m_LastError = e.what();
+            }
+            m_BatchRunning.store(false);
+        });
+    }
+
+    bool KataGoClient::TryPopBatchAnalysisItem(BatchAnalysisItem& outItem)
+    {
+        std::lock_guard<std::mutex> lock(m_BatchMutex);
+        if (m_BatchQueue.empty())
+        {
+            return false;
+        }
+        outItem = std::move(m_BatchQueue.front());
+        m_BatchQueue.pop_front();
         return true;
     }
 
@@ -528,7 +620,7 @@ namespace KurenaiGo
         }
     }
 
-    KataGoAnalysisResult KataGoClient::ExchangeAnalyze(Stone colorToMove)
+    KataGoAnalysisResult KataGoClient::ExchangeAnalyze(Stone colorToMove, const AnalysisBudget& budget)
     {
         // kata-analyzeはGTPの即時応答を返さず、代わりに"info move ... ownership ..."という
         // 1行の報告を定期的に送り続ける(1行が更新のたびに丸ごと再送される)。
@@ -539,9 +631,6 @@ namespace KurenaiGo
         // 代わりに、通常のGTPコマンド(ここではprotocol_version)を送ると解析はただちに中断され、
         // そのコマンド自身の正常な応答が届く。この方式は複数回の実機検証で安定して動作したため、
         // 停止には空行ではなく実コマンドを使う。詳細な検証結果はdocs/KurenaiGo_Developer.htmlを参照
-        constexpr DWORD kAnalysisTargetMs = 600;
-        constexpr DWORD kAnalysisHardCapMs = 1500;
-        constexpr int kAnalysisTargetVisits = 250;
 
         KataGoAnalysisResult result;
         result.ColorToMove = colorToMove;
@@ -604,8 +693,8 @@ namespace KurenaiGo
                     }
                 }
 
-                const bool shouldStop = elapsed >= kAnalysisHardCapMs ||
-                    (sawReport && (elapsed >= kAnalysisTargetMs || bestVisits >= kAnalysisTargetVisits));
+                const bool shouldStop = elapsed >= budget.HardCapMs ||
+                    (sawReport && (elapsed >= budget.TargetMs || bestVisits >= budget.TargetVisits));
                 if (shouldStop)
                 {
                     SendCommand("protocol_version"); // 実コマンドの送信でkata-analyzeを中断させる
