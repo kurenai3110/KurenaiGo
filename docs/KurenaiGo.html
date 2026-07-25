@@ -654,7 +654,8 @@ newUserRating = userRating + K * (actualScore - expected)</code></pre>
 <code>&lt;YYYYMMDD_HHMMSS&gt; &lt;この対局後のレーティング&gt; &lt;対局結果文字列&gt;</code>
 (<code>BuildGameFileName</code>と同じ<code>put_time</code>呼び出しを流用したタイムスタンプ)。
 通常の対局結果文字列(<code>"W+R"</code>等)に加えて、11.3節の初期レーティング決定
-(プレースメント)が収束した行は結果欄が<code>"PLACEMENT"</code>になる(通常の対局結果とは
+(プレースメント)で確定した行は結果欄が<code>"PLACEMENT"</code>になる(収束による確定・
+収束前に対局が終わったことによるフォールバック確定のいずれも同じ表記とし、通常の対局結果とは
 異なる由来であることが履歴から分かるようにするため)。起動時は全行を読み、パースできた行数を
 対局数、最後の行の値を現在のレーティングとして復元する(<code>LoadRating</code>、ファイル
 不在・全行パース失敗時は初期値にフォールバックし例外は投げない)。今回のパスでは推移の記録の
@@ -762,16 +763,30 @@ double InvertEloForRating(double expectedScore, double opponentRating);</code></
 <code>Rating.h/.cpp</code>に<code>ComputeEloDelta</code>と対になる関数として追加した。
 <code>Main.cpp</code>の<code>PlacementTracker</code>構造体が、手番ごとの勝率を指数移動平均
 (EMA、重み0.15)へ取り込み、<code>InvertEloForRating</code>で瞬間推定レーティングを求めて
-直近8件の履歴を保持する。サンプル数が10以上になったら、直近8件の最大-最小が15点未満、
-または総サンプル数が60に達した時点で「収束」とみなし、直近8件の平均値を確定レーティングと
-して現在選択中の盤の大きさに対応する履歴ファイル(<code>CurrentRatingPath()</code>、10.5節)へ
-結果<code>"PLACEMENT"</code>で追記する
-(<code>GamesPlayed</code>が0から1になり、以降は通常のレート戦になる)。収束するまでは
-現在進行中の対局をそのまま続行し、収束後にその対局が終了しても(すでにこのモードとしての
-決着がついているため)通常の終局時Elo更新は行わない(<code>FinalizeGameResult</code>の
-<code>isPlacementGame</code>引数で分岐、二重計上を避ける)。収束せずに対局が終わった場合は
-次の新規対局も引き続きプレースメントになる(複数局にまたがって収束させる想定どおりの挙動)。
-HUDには通常のレーティング表示の代わりに「レーティング測定中(推定: …)」を表示する。
+直近8件の履歴を保持する。この直近8件から「収束率」(<code>PlacementTracker::ConvergenceRate()</code>、
+0.0〜1.0)を計算し、<code>kConvergenceRateThreshold</code>(0.8=80%)以上になった時点で
+「収束」とみなす。収束率は、サンプル数がまだ少ない間(<code>kMinSamples</code>=10未満、または
+直近ウィンドウが8件埋まっていない間)は幅(spread)を評価するだけのデータが揃っていないため、
+サンプル数の到達度(<code>kMaxSamples</code>=60に対する割合)のみを使う。データが揃った後は、
+「直近8件の幅(spread)がkConvergenceThreshold(15点)未満に近づいた度合い」と「サンプル数が
+kMaxSamplesに近づいた度合い」のうち大きい方を採用する(どちらか一方の基準を満たせば収束と
+みなすため)。収束したら、直近8件の平均値を確定レーティングとして現在選択中の盤の大きさに
+対応する履歴ファイル(<code>CurrentRatingPath()</code>、10.5節)へ結果<code>"PLACEMENT"</code>で
+追記した上で、<strong>対局自体もその場で終了する</strong>(<code>GamesPlayed</code>が0から1に
+なり、以降は通常のレート戦になる。SGFの結果欄には<code>"Void"</code>を記録し、投了・終局後解析
+(11.5節)は他の終局経路と同様に走らせる)。収束(80%)に達する前に投了・終局してしまった場合は
+この対局ではレーティングを確定させない(<code>finalizePlacementRating()</code>ラムダを呼ばない)
+ため、<code>GamesPlayed</code>は0のままとなり、次のレート戦もプレースメントとして再開される
+(複数局にまたがって収束させる想定どおりの挙動)。この「再開」の際、<code>PlacementTracker</code>
+自身(<code>Active</code>・EMA・サンプル)は前の対局の状態のまま次の対局へ引き継がれる
+(<code>beginGameWithTargetRating</code>が、直前の盤の大きさ<code>BoardSize</code>と今回の
+<code>currentBoardSize</code>が一致し、かつまだ<code>Active</code>な場合のみ
+<code>Reset()</code>を呼ばないようにしている)。盤の大きさを変えた場合や、間にカジュアル対局を
+挟んだ場合は<code>Reset()</code>され、収束率は0%から再スタートする(レーティングが盤の大きさ
+ごとに別々に記録される10.5節の設計と整合させるため)。
+HUDには通常のレーティング表示の代わりに「レーティング測定中(推定: … 収束率: …%)」を表示する
+(収束率は上記<code>ConvergenceRate()</code>を百分率にしたもので、厳密な確率的意味を持つ値では
+なく、プレースメント中の体感的な目安として表示するものである)。
 </p>
 <div class="note">
 <p>
@@ -784,6 +799,47 @@ HUDには通常のレーティング表示の代わりに「レーティング�
 1手しか指していないのにサンプル数が10に達し即座に(誤って)収束する不具合が発覚した。
 <code>enterHumanToMove()</code>で<code>false</code>に戻す<code>placementSampledForCurrentTurn</code>
 フラグを追加し、1手番につき1回だけサンプリングするよう修正した。
+</p>
+</div>
+<div class="note">
+<p>
+<strong>実装中に発見・修正したバグ: 収束しても対局が最後まで打ち切られてしまう</strong>:
+当初の実装は「収束したらその場でレーティングを確定する」処理は持っていたが、確定後も対局自体は
+最後まで打ち切る設計になっており、「ある程度収束したら対局自体を終了する」という要求と
+合っていなかった。収束を検知した時点(この時点でturnStateは必ず<code>HumanToMove</code>。
+<code>RequestAnalysis(Stone::Black)</code>は<code>enterHumanToMove()</code>でのみ呼んでいるため)で
+即座に終局処理(SGF保存・対局後解析・GameOverへの遷移)まで行うよう修正した
+(<code>finalizePlacementRating()</code>ラムダに確定処理を切り出し、収束を検知した箇所から呼ぶ)。
+なお、収束(80%)に達する前に投了・終局してしまった場合にレーティングを確定させず
+<code>GamesPlayed</code>を0のまま次のレート戦もプレースメントとして再開させるのは、
+9路・13路など手数の少ない対局で信頼できるサンプルが集まる前に決着してしまうケースを想定した
+意図的な仕様であり(「収束するまで複数局かかることがある」)、バグではない。
+</p>
+</div>
+<div class="note">
+<p>
+<strong>実装中に発見・修正したバグ: 対局開始直後の数手で収束率が異常に高く出る</strong>:
+<code>ConvergenceRate()</code>の当初の実装は、サンプル数が少なくても直近ウィンドウの
+最大-最小(spread)を無条件に計算していた。サンプルが1〜数件しか無い段階ではこの幅が
+偶然小さくなりやすく(極端な場合はサンプル1件でspreadが0になる)、結果として対局開始
+直後の数手だけで収束率が100%近くまで跳ね上がって表示される不具合があった。
+<code>SampleCount &lt; kMinSamples</code>または直近ウィンドウが<code>kConvergenceWindowSize</code>
+(8件)埋まっていない間はspreadによる計算を行わず、サンプル数の到達度
+(<code>kMaxSamples</code>=60に対する割合)のみを収束率として返すよう修正した。この間は
+分母が60と大きいため、収束率が序盤だけで跳ね上がることはない。
+</p>
+</div>
+<div class="note">
+<p>
+<strong>実装中に発見・修正したバグ: 2局目になると収束率がリセットされてしまう</strong>:
+収束(80%)に達する前に対局が終わり、次のレート戦もプレースメントとして再開される場合でも、
+当初の実装は<code>beginGameWithTargetRating</code>で毎回無条件に<code>placementTracker.Reset()</code>
+を呼んでいたため、前の対局で積み上げたEMA・サンプルが対局のたびに失われ、収束率が毎回0%から
+やり直しになってしまっていた(実機検証で発覚)。<code>PlacementTracker</code>に現在追跡中の
+盤の大きさを保持する<code>BoardSize</code>フィールドを追加し、「今回もプレースメント対象」かつ
+「まだ<code>Active</code>」かつ「盤の大きさが前回と同じ」の3条件がすべて揃う場合のみ
+<code>Reset()</code>を呼ばずに前の対局の状態を引き継ぐよう修正した。盤の大きさを変えた場合は
+別のレーティング(10.5節)を測定することになるため、意図的にリセットする。
 </p>
 </div>
 <h3>11.4 実機検証: -override-config maxVisitsの効果</h3>

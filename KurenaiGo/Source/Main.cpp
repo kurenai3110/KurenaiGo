@@ -643,10 +643,17 @@ namespace
     // 初期レーティング決定(プレースメント)モード: 対局回数0のままレート戦を始めた場合のみ
     // 発動する。黒(人間)の手番ごとに得られるkata-analyzeの勝率(WinrateForColorToMove)を
     // Eloの期待勝率式の逆算(InvertEloForRating)に通し、「この勝率を出す人間側のレーティングは
-    // いくつか」を指数移動平均で追跡する。直近の推定値が安定したら収束とみなし、対局の結果を
-    // 待たずにその時点でrating_history.txtへ確定値を記録する(対局自体はそのまま続行する)。
-    // この収束基準(EMAの重み・ウィンドウ幅・しきい値・上限サンプル数)は事前の科学的較正を
-    // 行ったものではなく、妥当だと考えられる初期値である
+    // いくつか」を指数移動平均で追跡する。ConvergenceRate()(0.0〜1.0)がkConvergenceRateThreshold
+    // (80%)を超えたら「ある程度収束した」とみなし、対局の結果を待たずにその時点で
+    // rating_history.txtへ確定値を記録した上で対局自体もそこで終了する(Main.cppの
+    // finalizePlacementRating呼び出し箇所を参照)。収束(80%)に達する前に投了・終局してしまった
+    // 場合は、この対局ではレーティングを確定させない(GamesPlayedを増やさない)ため、
+    // 次回のレート戦も引き続きプレースメントになる(複数局にまたがって収束させる想定どおりの
+    // 挙動)。このとき、同じ盤の大きさで続けて始めた場合はEMA・サンプルを前の対局から引き継ぎ、
+    // 収束率が対局のたびに0%へ戻らないようにする(盤の大きさを変えた場合や、間にカジュアル対局
+    // を挟んだ場合はレーティングが別物になるためリセットする。Main.cppのbeginGameWithTargetRating
+    // 参照)。この収束基準(EMAの重み・ウィンドウ幅・しきい値・上限サンプル数)は事前の
+    // 科学的較正を行ったものではなく、妥当だと考えられる初期値である
     struct PlacementTracker
     {
         static constexpr double kEmaAlpha = 0.15;
@@ -654,18 +661,29 @@ namespace
         static constexpr double kConvergenceThreshold = 15.0; // レーティング換算でこの幅未満なら収束
         static constexpr int kMinSamples = 10;
         static constexpr int kMaxSamples = 60; // 収束しなくても打ち切る上限(無限に終わらないため)
+        // 収束率(ConvergenceRate)がこの値以上になったら収束とみなし対局を終了する
+        static constexpr double kConvergenceRateThreshold = 0.8;
+        // 収束率表示(ConvergenceRate)で「ここまで開いていればまだ0%とみなす」という
+        // 基準となる幅。厳密な較正値ではなく、HUD表示用の目安
+        static constexpr double kConvergenceReferenceSpread = 200.0;
 
         bool Active = false;
         int SampleCount = 0;
         double RunningWinrateEma = 0.5;
         std::vector<double> RecentEstimates; // 直近kConvergenceWindowSize件の推定レーティング
+        // 現在追跡中の盤の大きさ(9/13/19)。収束(80%)に達する前に対局が終わって次の対局も
+        // プレースメントになる場合、同じ盤の大きさが続く限りはこのトラッカーの状態(EMA・
+        // サンプル)を引き継ぎ、Resetしない(Main.cppのbeginGameWithTargetRating参照)。
+        // 盤の大きさを変えた場合はレーティングが別物(10.5節)になるため、引き継がずResetする
+        int BoardSize = -1;
 
-        void Reset(bool active)
+        void Reset(bool active, int boardSize)
         {
             Active = active;
             SampleCount = 0;
             RunningWinrateEma = 0.5;
             RecentEstimates.clear();
+            BoardSize = boardSize;
         }
 
         // 黒視点の勝率を1サンプル取り込む。収束したらtrueを返す(その場合CurrentEstimate()が確定値)
@@ -683,21 +701,7 @@ namespace
                 RecentEstimates.erase(RecentEstimates.begin());
             }
 
-            if (SampleCount < kMinSamples)
-            {
-                return false;
-            }
-            if (SampleCount >= kMaxSamples)
-            {
-                return true;
-            }
-            if (static_cast<int>(RecentEstimates.size()) < kConvergenceWindowSize)
-            {
-                return false;
-            }
-            const double maxV = *std::max_element(RecentEstimates.begin(), RecentEstimates.end());
-            const double minV = *std::min_element(RecentEstimates.begin(), RecentEstimates.end());
-            return (maxV - minV) < kConvergenceThreshold;
+            return ConvergenceRate() >= kConvergenceRateThreshold;
         }
 
         // 収束時点の確定推定値(直近ウィンドウの平均)
@@ -714,17 +718,44 @@ namespace
             }
             return sum / static_cast<double>(RecentEstimates.size());
         }
+
+        // 収束率(0.0〜1.0)。HUD表示にも、Update()の収束判定(kConvergenceRateThreshold以上で
+        // 収束)にも使う共通の値。サンプル数がkMinSamples未満、またはウィンドウが
+        // kConvergenceWindowSize件埋まっていない間は、まだ推定値の幅(spread)を評価する
+        // だけのデータが揃っていない。この段階でspreadを使うと、たまたま数手分の推定値が
+        // 近い値になっただけで見かけ上の収束率が跳ね上がってしまう(対局開始直後の数手で
+        // 収束率が異常に高く出ていた不具合の原因)ため、この間はサンプル数の到達度
+        // (kMaxSamples分の何%集まったか)のみを収束率として使う。データが揃った後は、
+        // 「幅(spread)がkConvergenceThreshold未満に近づいた度合い」と「サンプル数が
+        // kMaxSamplesに近づいた度合い」の大きい方を採用する(どちらか一方の基準を満たせば
+        // 収束とみなすため)
+        double ConvergenceRate() const
+        {
+            const double sampleRate = (std::min)(1.0, static_cast<double>(SampleCount) / kMaxSamples);
+            if (SampleCount < kMinSamples || static_cast<int>(RecentEstimates.size()) < kConvergenceWindowSize)
+            {
+                return sampleRate;
+            }
+            const double maxV = *std::max_element(RecentEstimates.begin(), RecentEstimates.end());
+            const double minV = *std::min_element(RecentEstimates.begin(), RecentEstimates.end());
+            const double spread = maxV - minV;
+            const double spreadRate = 1.0 - (spread - kConvergenceThreshold) /
+                (kConvergenceReferenceSpread - kConvergenceThreshold);
+            return (std::max)(0.0, (std::min)(1.0, (std::max)(spreadRate, sampleRate)));
+        }
     };
 
     // 盤下のHUDに表示する手番状態・アゲハマ数のテキストを組み立てる。reviewMoveIndex/
     // reviewTotalMoves/reviewResultはturnState==Reviewingの場合のみ使う。aiTargetRatingは
     // 今回の対局でAIが狙っている強さ(目安レーティング)。isPlacementActiveがtrueの間は
-    // userRatingの代わりにplacementEstimateを「測定中」の値として表示する。
+    // userRatingの代わりにplacementEstimateを「測定中」の値として、あわせて
+    // placementConvergenceRate(0.0〜1.0、PlacementTracker::ConvergenceRate参照)を
+    // 収束率(%)として表示する。
     // postGameAnalysisActiveの間はGameOverの表示に解析の進捗を追記する(11章参照)
     std::wstring BuildStatusText(TurnState turnState, const GoBoard& board,
         int reviewMoveIndex, int reviewTotalMoves, const std::string& reviewResult,
         double userRating, GameMode gameMode, double aiTargetRating,
-        bool isPlacementActive, double placementEstimate,
+        bool isPlacementActive, double placementEstimate, double placementConvergenceRate,
         bool postGameAnalysisActive, int postGameAnalysisIndex, int postGameAnalysisTotalMoves)
     {
         if (turnState == TurnState::ChoosingBoardSize)
@@ -771,7 +802,8 @@ namespace
             L" 白:" + std::to_wstring(board.CapturesBy(Stone::White));
         if (isPlacementActive)
         {
-            text += L"   レーティング測定中(推定:" + std::to_wstring(std::lround(placementEstimate)) + L")";
+            text += L"   レーティング測定中(推定:" + std::to_wstring(std::lround(placementEstimate)) +
+                L" 収束率:" + std::to_wstring(std::lround(placementConvergenceRate * 100.0)) + L"%)";
         }
         else
         {
@@ -786,7 +818,7 @@ namespace
     void DrawHud(KurenaiEngine2D& renderer, const BoardLayout& layout, TurnState turnState, const GoBoard& board,
         int reviewMoveIndex, int reviewTotalMoves, const std::string& reviewResult,
         double userRating, GameMode gameMode, double aiTargetRating,
-        bool isPlacementActive, double placementEstimate,
+        bool isPlacementActive, double placementEstimate, double placementConvergenceRate,
         bool postGameAnalysisActive, int postGameAnalysisIndex, int postGameAnalysisTotalMoves)
     {
         const float hudX = layout.CenterX - layout.GridExtent * 0.5f;
@@ -794,7 +826,7 @@ namespace
         const float hudY = bottomMarginCenterY - kHudFontSize * 0.5f;
         renderer.DrawText(hudX, hudY,
             BuildStatusText(turnState, board, reviewMoveIndex, reviewTotalMoves, reviewResult,
-                userRating, gameMode, aiTargetRating, isPlacementActive, placementEstimate,
+                userRating, gameMode, aiTargetRating, isPlacementActive, placementEstimate, placementConvergenceRate,
                 postGameAnalysisActive, postGameAnalysisIndex, postGameAnalysisTotalMoves),
             kHudFontSize, kHudColorR, kHudColorG, kHudColorB, 1.0f);
     }
@@ -1050,8 +1082,11 @@ namespace
     // データを捏造しない)。opponentRatingForThisGameは今回のAIの目標強さ(=対局開始時点の
     // userRating.Rating)で、Elo更新の相手レーティングとして使う(AIは常に自分と互角の相手に
     // 調整しているため、固定の1500ではなくこの値を使う、10章参照)。isPlacementGameがtrueの
-    // 場合、対局中にPlacementTrackerがすでにレーティングを確定させているため、終局時の
-    // 通常のElo更新は行わない(二重計上を避ける)
+    // 場合、この関数では通常のElo更新を行わない。収束(80%)に達していれば呼び出し側が
+    // この関数より前にfinalizePlacementRating()ですでにレーティングを確定させており、
+    // 未収束のまま対局が終わった場合はそもそも今回はレーティングを確定させない
+    // (次回もプレースメントとして再開するため)。いずれにしてもここでの二重計上・
+    // 誤った確定は起きない
     std::filesystem::path FinalizeGameResult(const std::filesystem::path& gamesDir,
         const std::filesystem::path& ratingPath, const std::vector<SgfMove>& moves,
         const std::string& result, GameMode gameMode, double opponentRatingForThisGame,
@@ -1334,6 +1369,35 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         // Active。収束するとActiveがfalseになりHUD表示が通常のレーティング表示へ切り替わる
         PlacementTracker placementTracker;
 
+        // プレースメント対局が収束率80%(kConvergenceRateThreshold)に到達した時点で呼ぶ。
+        // 直近ウィンドウの推定値の平均を、その対局の確定レーティングとして記録する
+        // (GamesPlayedが0から1になり、以降は通常のレート戦になる)。収束(80%)に達する前に
+        // 対局が投了・終局した場合はこの関数を呼ばない。その場合Activeがtrueのまま残り、
+        // 次回のレート戦もGamesPlayed==0によりプレースメントとして再開される(複数局に
+        // またがって収束させる想定どおりの挙動)。すでに確定済み(Active==false)の場合は
+        // 何もしない(念のためのガード。現状は収束経路からのみ呼ばれる)
+        const auto finalizePlacementRating = [&]()
+        {
+            if (!placementTracker.Active)
+            {
+                return;
+            }
+            RatingData& userRating = CurrentUserRating();
+            userRating.Rating = placementTracker.CurrentEstimate();
+            userRating.GamesPlayed += 1;
+            placementTracker.Active = false;
+            try
+            {
+                AppendRatingEntry(CurrentRatingPath(), BuildTimestamp(std::chrono::system_clock::now()),
+                    userRating.Rating, "PLACEMENT");
+            }
+            catch (const std::exception& e)
+            {
+                std::ofstream log("error.log", std::ios::app);
+                log << "レーティング履歴の保存に失敗しました: " << e.what() << std::endl;
+            }
+        };
+
         // 苦手分野の解析(局面ごとの悪手率)。mistake_stats.txtから現在の集計を復元する。
         // レート戦の対局が終了するたびに、その対局の全手を自動解析して集計する(下記)
         MistakeStatsData mistakeStats = LoadMistakeStats(mistakeStatsPath);
@@ -1452,7 +1516,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         {
             currentAiTargetRating = ClampAiTargetRating(targetRating);
             isCurrentGamePlacement = (currentGameMode == GameMode::Ranked && CurrentUserRating().GamesPlayed == 0);
-            placementTracker.Reset(isCurrentGamePlacement);
+            // 前回の対局が収束(80%)に達しないまま終わり、今回も同じ盤の大きさでプレースメントを
+            // 続ける場合は、PlacementTrackerの状態(EMA・サンプル)をリセットせず引き継ぐ
+            // (でないと収束率が対局のたびに0%へ戻ってしまう)。それ以外(プレースメントで
+            // なくなった/盤の大きさが変わった/今回が新規にプレースメントを始める場合)はリセットする
+            const bool resumePlacement = isCurrentGamePlacement &&
+                placementTracker.Active && placementTracker.BoardSize == currentBoardSize;
+            if (!resumePlacement)
+            {
+                placementTracker.Reset(isCurrentGamePlacement, currentBoardSize);
+            }
 
             const int maxVisits = ComputeMaxVisitsForRating(currentAiTargetRating);
             kataGo.StartAsync(
@@ -1821,29 +1894,32 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     hasAnalysis = !latestAnalysis.Failed;
 
                     // 初期レーティング決定(プレースメント)モード中は、黒(人間)の手番ごとの
-                    // 勝率を追跡し、収束したらその場でレーティングを確定する(10.4節参照)。
-                    // TryGetAnalysisResultは同じ結果を読み出すたびtrueを返し続けるため、
-                    // この手番でまだサンプリングしていない場合のみ実行する
+                    // 勝率を追跡する(10.4節参照)。TryGetAnalysisResultは同じ結果を読み出す
+                    // たびtrueを返し続けるため、この手番でまだサンプリングしていない場合のみ
+                    // 実行する。ある程度収束したと判定されたら、対局の自然な終了を待たず
+                    // その場でレーティングを確定し対局を終了する(この時点でturnStateは
+                    // 必ずHumanToMove。RequestAnalysis(Stone::Black)はenterHumanToMoveでのみ
+                    // 呼んでいるため)
                     if (hasAnalysis && placementTracker.Active && !placementSampledForCurrentTurn)
                     {
                         placementSampledForCurrentTurn = true;
                         const bool converged = placementTracker.Update(latestAnalysis.WinrateForColorToMove);
                         if (converged)
                         {
-                            RatingData& userRating = CurrentUserRating();
-                            userRating.Rating = placementTracker.CurrentEstimate();
-                            userRating.GamesPlayed += 1;
-                            placementTracker.Active = false;
-                            try
+                            finalizePlacementRating();
+                            renderer.PlaySound(gameEndSound);
+                            lastSavedGamePath = FinalizeGameResult(gamesDir, CurrentRatingPath(), moveHistory, "Void",
+                                currentGameMode, currentAiTargetRating, isCurrentGamePlacement, CurrentUserRating(), currentBoardSize);
+                            if (currentGameMode == GameMode::Ranked)
                             {
-                                AppendRatingEntry(CurrentRatingPath(), BuildTimestamp(std::chrono::system_clock::now()),
-                                    userRating.Rating, "PLACEMENT");
+                                beginPostGameAnalysis(lastSavedGamePath);
                             }
-                            catch (const std::exception& e)
-                            {
-                                std::ofstream log("error.log", std::ios::app);
-                                log << "レーティング履歴の保存に失敗しました: " << e.what() << std::endl;
-                            }
+                            const std::string message =
+                                "初期レーティングの推定が収束したため、対局を終了します。\n確定レーティング: " +
+                                std::to_string(std::lround(CurrentUserRating().Rating));
+                            ShowMessageBoxUtf8(renderer.GetWindowHandle(), message,
+                                "KurenaiGo - 初期レーティング確定", MB_OK | MB_ICONINFORMATION);
+                            turnState = TurnState::GameOver;
                         }
                     }
                 }
@@ -2115,7 +2191,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 DrawHud(renderer, layout, turnState, displayBoard,
                     reviewMoveIndex, static_cast<int>(reviewRecord.Moves.size()), reviewRecord.Result,
                     CurrentUserRating().Rating, currentGameMode, currentAiTargetRating,
-                    placementTracker.Active, placementTracker.CurrentEstimate(),
+                    placementTracker.Active, placementTracker.CurrentEstimate(), placementTracker.ConvergenceRate(),
                     postGameAnalysisActive, postGameAnalysisIndex,
                     static_cast<int>(postGameAnalysisMoves.size()));
             }
