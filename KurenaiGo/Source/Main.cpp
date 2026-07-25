@@ -30,6 +30,7 @@
 #include "KataGoClient.h"
 #include "KurenaiEngine2D.h"
 #include "KurenaiTypes.h"
+#include "MistakeStats.h"
 #include "PathUtil.h"
 #include "Rating.h"
 #include "Sgf.h"
@@ -390,6 +391,26 @@ namespace
     // 着手の言語化: moveIndex手目の局面に至った手(record.Moves[moveIndex-1])について、
     // 着手者から見た勝率の変化と最善手だったかを日本語の文章にする。moveIndex==0(まだ1手も
     // 進めていない)なら空文字列、前後どちらかの手数が未解析なら「解析中...」を返す
+    // 勝率の下げ幅による4段階分類(9.5節「着手の言語化」・13章「苦手分野の解析」で共用)。
+    // 一般的なGo解析ツールで使われる目安の一例であり、局面によって適切な閾値は変わり得る
+    // (絶対的な基準ではない)
+    MoveQuality ClassifyMoveQuality(float deltaPercent, bool isBestMove)
+    {
+        if (isBestMove || deltaPercent >= -2.0f)
+        {
+            return MoveQuality::Best;
+        }
+        if (deltaPercent >= -5.0f)
+        {
+            return MoveQuality::SlightLoss;
+        }
+        if (deltaPercent >= -15.0f)
+        {
+            return MoveQuality::Loose;
+        }
+        return MoveQuality::Blunder;
+    }
+
     std::wstring BuildMoveCommentary(const SgfGameRecord& record, int moveIndex,
         const std::vector<float>& winrateCache, const std::vector<int>& bestMoveRowCache,
         const std::vector<int>& bestMoveColCache, const std::vector<bool>& hasCached)
@@ -420,23 +441,12 @@ namespace
         std::wostringstream text;
         text << moveIndex << L"手目: ";
 
-        // 勝率の下げ幅による分類。一般的なGo解析ツールで使われる目安の一例であり、
-        // 局面によって適切な閾値は変わり得る(絶対的な基準ではない)
-        if (isBestMove || deltaPercent >= -2.0f)
+        switch (ClassifyMoveQuality(deltaPercent, isBestMove))
         {
-            text << L"最善手級です";
-        }
-        else if (deltaPercent >= -5.0f)
-        {
-            text << L"やや損な手です";
-        }
-        else if (deltaPercent >= -15.0f)
-        {
-            text << L"緩着です";
-        }
-        else
-        {
-            text << L"悪手です";
+        case MoveQuality::Best:       text << L"最善手級です"; break;
+        case MoveQuality::SlightLoss: text << L"やや損な手です"; break;
+        case MoveQuality::Loose:      text << L"緩着です"; break;
+        case MoveQuality::Blunder:    text << L"悪手です"; break;
         }
 
         text << L"(勝率 " << std::fixed << std::setprecision(1) << (winrateBefore * 100.0f) << L"%→"
@@ -533,6 +543,7 @@ namespace
         WaitingForScore, // 両者パス後、final_score応答待ち
         GameOver,        // 対局終了。Vキーで直前の対局の棋譜再生(Reviewing)へ移れる
         Reviewing,       // 棋譜再生中。矢印キーで手を進め戻しする
+        ViewingMistakeStats, // 苦手分野の解析結果を表示中(GameOver/Reviewingから遷移)
     };
 
     // 対局モード。レート戦のみレーティング(棋力の数値化、9.6節参照)を更新する
@@ -656,11 +667,13 @@ namespace
     // 盤下のHUDに表示する手番状態・アゲハマ数のテキストを組み立てる。reviewMoveIndex/
     // reviewTotalMoves/reviewResultはturnState==Reviewingの場合のみ使う。aiTargetRatingは
     // 今回の対局でAIが狙っている強さ(目安レーティング)。isPlacementActiveがtrueの間は
-    // userRatingの代わりにplacementEstimateを「測定中」の値として表示する
+    // userRatingの代わりにplacementEstimateを「測定中」の値として表示する。
+    // postGameAnalysisActiveの間はGameOverの表示に解析の進捗を追記する(11章参照)
     std::wstring BuildStatusText(TurnState turnState, const GoBoard& board,
         int reviewMoveIndex, int reviewTotalMoves, const std::string& reviewResult,
         double userRating, GameMode gameMode, double aiTargetRating,
-        bool isPlacementActive, double placementEstimate)
+        bool isPlacementActive, double placementEstimate,
+        bool postGameAnalysisActive, int postGameAnalysisIndex, int postGameAnalysisTotalMoves)
     {
         if (turnState == TurnState::ChoosingGameMode)
         {
@@ -680,7 +693,14 @@ namespace
         case TurnState::HumanToMove:     text = L"あなたの番です(黒)"; break;
         case TurnState::AIThinking:      text = L"KataGo思考中..."; break;
         case TurnState::WaitingForScore: text = L"終局判定中..."; break;
-        case TurnState::GameOver:        text = L"対局終了(Vキーで棋譜再生)"; break;
+        case TurnState::GameOver:
+            text = L"対局終了(Vキーで棋譜再生)";
+            if (postGameAnalysisActive)
+            {
+                text += L"  対局後の解析中 (" + std::to_wstring((std::min)(postGameAnalysisIndex, postGameAnalysisTotalMoves)) +
+                    L"/" + std::to_wstring(postGameAnalysisTotalMoves) + L"手)";
+            }
+            break;
         case TurnState::Reviewing:
             text = L"棋譜再生中 (手 " + std::to_wstring(reviewMoveIndex) + L"/" +
                 std::to_wstring(reviewTotalMoves) + L")";
@@ -710,14 +730,16 @@ namespace
     void DrawHud(KurenaiEngine2D& renderer, const BoardLayout& layout, TurnState turnState, const GoBoard& board,
         int reviewMoveIndex, int reviewTotalMoves, const std::string& reviewResult,
         double userRating, GameMode gameMode, double aiTargetRating,
-        bool isPlacementActive, double placementEstimate)
+        bool isPlacementActive, double placementEstimate,
+        bool postGameAnalysisActive, int postGameAnalysisIndex, int postGameAnalysisTotalMoves)
     {
         const float hudX = layout.CenterX - layout.GridExtent * 0.5f;
         const float bottomMarginCenterY = (layout.CenterY - layout.BoardExtent * 0.5f) * 0.5f;
         const float hudY = bottomMarginCenterY - kHudFontSize * 0.5f;
         renderer.DrawText(hudX, hudY,
             BuildStatusText(turnState, board, reviewMoveIndex, reviewTotalMoves, reviewResult,
-                userRating, gameMode, aiTargetRating, isPlacementActive, placementEstimate),
+                userRating, gameMode, aiTargetRating, isPlacementActive, placementEstimate,
+                postGameAnalysisActive, postGameAnalysisIndex, postGameAnalysisTotalMoves),
             kHudFontSize, kHudColorR, kHudColorG, kHudColorB, 1.0f);
     }
 
@@ -741,6 +763,8 @@ namespace
         StrengthRecommended,
         StrengthStronger,
         StrengthMuchStronger,
+        ShowMistakeStats,
+        BackFromStats,
     };
 
     // 1フレーム分のボタン行を組み立てる際の仕様(ラベル・有効/無効・トグルON状態)
@@ -1029,6 +1053,86 @@ namespace
                 kGraphMarkerRadius, kGraphMarkerColorR, kGraphMarkerColorG, kGraphMarkerColorB, 1.0f);
         }
     }
+
+    // 苦手分野の解析結果(局面ごとの悪手率)を表示用の行に組み立てる。局面の3分割は単純な
+    // 手数の割合によるものであり、囲碁理論上の厳密な布石・中盤・ヨセの境界ではない(11章参照)
+    std::vector<std::wstring> BuildMistakeStatsLines(const MistakeStatsData& stats)
+    {
+        std::vector<std::wstring> lines;
+        lines.push_back(L"苦手分野の解析(レート戦終了時に自動解析した手を集計)");
+        lines.push_back(L"");
+
+        const wchar_t* phaseLabels[3] = { L"序盤(1〜33%)", L"中盤(34〜66%)", L"終盤(67〜100%)" };
+        double looseBlunderRate[3] = { -1.0, -1.0, -1.0 };
+
+        for (int phase = 0; phase < 3; ++phase)
+        {
+            const int* counts = stats.Counts[phase];
+            const int total = counts[0] + counts[1] + counts[2] + counts[3];
+
+            std::wostringstream line;
+            line << phaseLabels[phase] << L": ";
+            if (total == 0)
+            {
+                line << L"データがありません";
+                lines.push_back(line.str());
+                continue;
+            }
+
+            const double best = 100.0 * counts[static_cast<int>(MoveQuality::Best)] / total;
+            const double slight = 100.0 * counts[static_cast<int>(MoveQuality::SlightLoss)] / total;
+            const double loose = 100.0 * counts[static_cast<int>(MoveQuality::Loose)] / total;
+            const double blunder = 100.0 * counts[static_cast<int>(MoveQuality::Blunder)] / total;
+            looseBlunderRate[phase] = loose + blunder;
+
+            line << L"最善手級 " << std::fixed << std::setprecision(0) << best << L"% "
+                 << L"やや損 " << slight << L"% "
+                 << L"緩着 " << loose << L"% "
+                 << L"悪手 " << blunder << L"%  (合計" << total << L"手)";
+            if (total < 10)
+            {
+                line << L" ※データが少なめです";
+            }
+            lines.push_back(line.str());
+        }
+
+        lines.push_back(L"");
+        int worstPhase = -1;
+        for (int phase = 0; phase < 3; ++phase)
+        {
+            if (looseBlunderRate[phase] >= 0.0 &&
+                (worstPhase < 0 || looseBlunderRate[phase] > looseBlunderRate[worstPhase]))
+            {
+                worstPhase = phase;
+            }
+        }
+        if (worstPhase >= 0)
+        {
+            lines.push_back(std::wstring(L"もっとも「緩着+悪手」の割合が高いのは") +
+                phaseLabels[worstPhase] + L"です");
+        }
+        else
+        {
+            lines.push_back(L"まだ十分なデータがありません(レート戦を対局すると自動的に集計されます)");
+        }
+        return lines;
+    }
+
+    // 苦手分野の解析結果を盤の代わりに表示する
+    void DrawMistakeStatsScreen(KurenaiEngine2D& renderer, uint32_t windowWidth, uint32_t windowHeight,
+        const MistakeStatsData& stats)
+    {
+        const std::vector<std::wstring> lines = BuildMistakeStatsLines(stats);
+        constexpr float fontSize = 18.0f;
+        constexpr float lineHeight = 30.0f;
+        const float startX = static_cast<float>(windowWidth) * 0.08f;
+        float y = static_cast<float>(windowHeight) - lineHeight * 2.0f;
+        for (const std::wstring& line : lines)
+        {
+            renderer.DrawText(startX, y, line, fontSize, 0.9f, 0.9f, 0.9f, 1.0f);
+            y -= lineHeight;
+        }
+    }
 }
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
@@ -1043,6 +1147,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         const std::filesystem::path soundsDir = ResolveAppDataPath(L"Assets/Sounds");
         const std::filesystem::path gamesDir = ResolveAppDataPath(L"Games");
         const std::filesystem::path ratingPath = ResolveAppDataPath(L"rating_history.txt");
+        const std::filesystem::path mistakeStatsPath = ResolveAppDataPath(L"mistake_stats.txt");
 
         KurenaiEngine2D renderer(kWindowTitle, kWindowWidth, kWindowHeight, GraphicsAPI::DX11);
 
@@ -1074,6 +1179,24 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         // 初期レーティング決定(プレースメント)の追跡状態。isCurrentGamePlacementの対局中のみ
         // Active。収束するとActiveがfalseになりHUD表示が通常のレーティング表示へ切り替わる
         PlacementTracker placementTracker;
+
+        // 苦手分野の解析(局面ごとの悪手率)。mistake_stats.txtから現在の集計を復元する。
+        // レート戦の対局が終了するたびに、その対局の全手を自動解析して集計する(下記)
+        MistakeStatsData mistakeStats = LoadMistakeStats(mistakeStatsPath);
+        // 対局終了後の自動解析の状態。postGameAnalysisActiveの間は新規対局・棋譜再生を
+        // ブロックする(KataGoの解析チャンネルを他の経路と競合させないため)
+        bool postGameAnalysisActive = false;
+        std::vector<SgfMove> postGameAnalysisMoves; // 解析対象(終了した対局のmoveHistoryのコピー)
+        std::string postGameAnalysisSgfFileName;    // 集計の重複排除キーに使うSGFファイル名
+        int postGameAnalysisIndex = 0;              // 次に要求する手数
+        std::vector<float> postGameWinrateCache;    // サイズ = 総手数+1(黒視点)
+        std::vector<bool> postGameHasCached;
+        std::vector<int> postGameBestMoveRowCache;  // その局面での最善候補手(着手の言語化と同様)
+        std::vector<int> postGameBestMoveColCache;
+        bool postGameAnalysisRequestPending = false; // 現在解析要求中かどうか
+        // 「苦手分野」ボタンで ViewingMistakeStats に入る前の状態(GameOver/Reviewing)。
+        // 「戻る」ボタンでここへ戻す
+        TurnState statsReturnState = TurnState::GameOver;
 
         // 棋譜再生(Reviewing)の状態
         SgfGameRecord reviewRecord;
@@ -1186,6 +1309,73 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             turnState = TurnState::EngineStarting;
         };
 
+        // レート戦の対局が終了した直後に呼ぶ。終了した対局の全手を自動解析するため、
+        // moveHistoryのコピーを保持して対局後解析の状態を初期化する(実際の解析要求は
+        // 毎フレームのadvancePostGameAnalysisIfNeededが行う)。手が無い対局(開始直後の投了等)
+        // では何もしない
+        const auto beginPostGameAnalysis = [&](const std::filesystem::path& savedPath)
+        {
+            if (moveHistory.empty())
+            {
+                return;
+            }
+            postGameAnalysisMoves = moveHistory;
+            postGameAnalysisSgfFileName = savedPath.filename().string();
+            postGameAnalysisIndex = 0;
+            postGameWinrateCache.assign(postGameAnalysisMoves.size() + 1, 0.5f);
+            postGameHasCached.assign(postGameAnalysisMoves.size() + 1, false);
+            postGameBestMoveRowCache.assign(postGameAnalysisMoves.size() + 1, -1);
+            postGameBestMoveColCache.assign(postGameAnalysisMoves.size() + 1, -1);
+            postGameAnalysisRequestPending = false;
+            postGameAnalysisActive = true;
+        };
+
+        // postGameAnalysisActiveの間、解析要求中でなければ次の手数の解析を要求する
+        // (requestReviewAnalysisForと同じ手順: ResetBoardしてから0手目から再生し直す)
+        const auto advancePostGameAnalysisIfNeeded = [&]()
+        {
+            if (!postGameAnalysisActive || postGameAnalysisRequestPending)
+            {
+                return;
+            }
+            if (postGameAnalysisIndex > static_cast<int>(postGameAnalysisMoves.size()))
+            {
+                postGameAnalysisActive = false;
+                return;
+            }
+
+            // 対局後の自動解析は補助機能のため、KataGoとの通信で何か問題が起きても
+            // (新規対局・棋譜再生をブロックしたまま止まってしまわないよう)ここで打ち切り、
+            // error.logに記録するのみとする
+            try
+            {
+                kataGo.ResetBoard();
+                for (int i = 0; i < postGameAnalysisIndex; ++i)
+                {
+                    const SgfMove& move = postGameAnalysisMoves[static_cast<size_t>(i)];
+                    if (move.IsPass)
+                    {
+                        kataGo.PlayPass(move.Color);
+                    }
+                    else
+                    {
+                        kataGo.PlayMove(move.Color, move.Row, move.Col);
+                    }
+                }
+                const Stone colorToMove = (postGameAnalysisIndex == 0)
+                    ? Stone::Black
+                    : Opponent(postGameAnalysisMoves[static_cast<size_t>(postGameAnalysisIndex - 1)].Color);
+                kataGo.RequestAnalysis(colorToMove);
+                postGameAnalysisRequestPending = true;
+            }
+            catch (const std::exception& e)
+            {
+                std::ofstream log("error.log", std::ios::app);
+                log << "対局後の自動解析を中断しました: " << e.what() << std::endl;
+                postGameAnalysisActive = false;
+            }
+        };
+
         bool territoryOverlayEnabled = false;
         bool hintOverlayEnabled = false;
 
@@ -1261,6 +1451,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 buttonSpecs.push_back({ ButtonId::StrengthStronger, L"強め", true, false });
                 buttonSpecs.push_back({ ButtonId::StrengthMuchStronger, L"とても強め", true, false });
             }
+            else if (turnState == TurnState::ViewingMistakeStats)
+            {
+                buttonSpecs.push_back({ ButtonId::BackFromStats, L"戻る", true, false });
+            }
             else
             {
                 buttonSpecs.push_back({ ButtonId::ToggleTerritory, L"地合い表示", true, territoryOverlayEnabled });
@@ -1272,7 +1466,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 }
                 if (turnState == TurnState::GameOver && !lastSavedGamePath.empty())
                 {
-                    buttonSpecs.push_back({ ButtonId::StartReview, L"棋譜再生", true, false });
+                    // 対局後の自動解析中(11章参照)は棋譜再生を開始できない
+                    // (KataGoの解析チャンネルを取り合わないため)
+                    buttonSpecs.push_back({ ButtonId::StartReview, L"棋譜再生", !postGameAnalysisActive, false });
                 }
                 if (turnState == TurnState::Reviewing)
                 {
@@ -1283,8 +1479,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 }
                 if (turnState == TurnState::GameOver || turnState == TurnState::Reviewing)
                 {
-                    // 対局終了後・棋譜再生中はいつでも新規対局を開始できる(何度でも打ち直せるようにする)
-                    buttonSpecs.push_back({ ButtonId::NewGame, L"新規対局", true, false });
+                    // 対局終了後・棋譜再生中はいつでも新規対局を開始できる(何度でも打ち直せるようにする)。
+                    // 対局後の自動解析中は同じ理由でブロックする
+                    buttonSpecs.push_back({ ButtonId::NewGame, L"新規対局", !postGameAnalysisActive, false });
+                    buttonSpecs.push_back({ ButtonId::ShowMistakeStats, L"苦手分野", true, false });
                 }
             }
             buttonSpecs.push_back({ ButtonId::Quit, L"終了", true, false });
@@ -1333,6 +1531,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     case ButtonId::StrengthMuchStronger:
                         beginGameWithTargetRating(userRating.Rating + kCasualStrengthOffsets[4]);
                         break;
+                    case ButtonId::ShowMistakeStats:
+                        statsReturnState = turnState;
+                        turnState = TurnState::ViewingMistakeStats;
+                        break;
+                    case ButtonId::BackFromStats:
+                        turnState = statsReturnState;
+                        break;
                     }
                     break; // ボタンは重ならない配置のため、1個ヒットしたら以降は調べない
                 }
@@ -1369,6 +1574,68 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     }
                     reviewAnalysisPendingIndex = -1;
                 }
+                else if (postGameAnalysisRequestPending)
+                {
+                    // レート戦終局後の自動解析結果を受け取る(11章参照)。着手前後の勝率が
+                    // 両方揃った時点でその着手を分類し、初めて見る手数のみ苦手分野の統計へ加算する
+                    if (!polledAnalysis.Failed &&
+                        postGameAnalysisIndex < static_cast<int>(postGameHasCached.size()))
+                    {
+                        const size_t index = static_cast<size_t>(postGameAnalysisIndex);
+                        postGameWinrateCache[index] = ToBlackWinrate(polledAnalysis);
+                        postGameHasCached[index] = true;
+
+                        int bestRow = -1;
+                        int bestCol = -1;
+                        for (const AnalysisMoveInfo& move : polledAnalysis.TopMoves)
+                        {
+                            if (move.Order == 0)
+                            {
+                                bestRow = move.Row;
+                                bestCol = move.Col;
+                                break;
+                            }
+                        }
+                        postGameBestMoveRowCache[index] = bestRow;
+                        postGameBestMoveColCache[index] = bestCol;
+
+                        if (index >= 1 && postGameHasCached[index - 1])
+                        {
+                            const SgfMove& playedMove = postGameAnalysisMoves[index - 1];
+                            const Stone mover = playedMove.Color;
+                            const float winrateBefore = (mover == Stone::Black)
+                                ? postGameWinrateCache[index - 1] : 1.0f - postGameWinrateCache[index - 1];
+                            const float winrateAfter = (mover == Stone::Black)
+                                ? postGameWinrateCache[index] : 1.0f - postGameWinrateCache[index];
+                            const float deltaPercent = (winrateAfter - winrateBefore) * 100.0f;
+                            const bool isBestMove = !playedMove.IsPass &&
+                                postGameBestMoveRowCache[index - 1] == playedMove.Row &&
+                                postGameBestMoveColCache[index - 1] == playedMove.Col;
+
+                            const MoveQuality quality = ClassifyMoveQuality(deltaPercent, isBestMove);
+                            const GamePhase phase = DeterminePhase(
+                                static_cast<int>(index), static_cast<int>(postGameAnalysisMoves.size()));
+                            const std::string dedupKey = postGameAnalysisSgfFileName + ":" + std::to_string(index);
+                            if (mistakeStats.SeenKeys.count(dedupKey) == 0)
+                            {
+                                mistakeStats.Counts[static_cast<int>(phase)][static_cast<int>(quality)] += 1;
+                                mistakeStats.SeenKeys.insert(dedupKey);
+                                try
+                                {
+                                    AppendMistakeEntry(mistakeStatsPath, postGameAnalysisSgfFileName,
+                                        static_cast<int>(index), phase, quality);
+                                }
+                                catch (const std::exception& e)
+                                {
+                                    std::ofstream log("error.log", std::ios::app);
+                                    log << "苦手分野の統計の保存に失敗しました: " << e.what() << std::endl;
+                                }
+                            }
+                        }
+                    }
+                    postGameAnalysisRequestPending = false;
+                    ++postGameAnalysisIndex;
+                }
                 else
                 {
                     latestAnalysis = polledAnalysis;
@@ -1402,10 +1669,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 }
             }
 
+            advancePostGameAnalysisIfNeeded();
+
             switch (turnState)
             {
             case TurnState::ChoosingGameMode:
             case TurnState::ChoosingCasualStrength:
+            case TurnState::ViewingMistakeStats:
                 break; // ボタン選択のみで、ここでの追加処理は無い
 
             case TurnState::EngineStarting:
@@ -1424,6 +1694,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 {
                     renderer.PlaySound(gameEndSound);
                     lastSavedGamePath = FinalizeGameResult(gamesDir, ratingPath, moveHistory, "W+R", currentGameMode, currentAiTargetRating, isCurrentGamePlacement, userRating);
+                    if (currentGameMode == GameMode::Ranked)
+                    {
+                        beginPostGameAnalysis(lastSavedGamePath);
+                    }
                     ShowMessageBoxUtf8(renderer.GetWindowHandle(), "投了しました。KataGoの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
                     turnState = TurnState::GameOver;
                 }
@@ -1472,6 +1746,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     {
                         renderer.PlaySound(gameEndSound);
                         lastSavedGamePath = FinalizeGameResult(gamesDir, ratingPath, moveHistory, "B+R", currentGameMode, currentAiTargetRating, isCurrentGamePlacement, userRating);
+                        if (currentGameMode == GameMode::Ranked)
+                        {
+                            beginPostGameAnalysis(lastSavedGamePath);
+                        }
                         ShowMessageBoxUtf8(renderer.GetWindowHandle(), "KataGoが投了しました。あなたの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
                         turnState = TurnState::GameOver;
                     }
@@ -1513,6 +1791,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 {
                     renderer.PlaySound(gameEndSound);
                     lastSavedGamePath = FinalizeGameResult(gamesDir, ratingPath, moveHistory, score, currentGameMode, currentAiTargetRating, isCurrentGamePlacement, userRating);
+                    if (currentGameMode == GameMode::Ranked)
+                    {
+                        beginPostGameAnalysis(lastSavedGamePath);
+                    }
                     const std::string message = "対局終了\n結果: " + score;
                     ShowMessageBoxUtf8(renderer.GetWindowHandle(), message, "KurenaiGo - 対局終了", MB_OK | MB_ICONINFORMATION);
                     turnState = TurnState::GameOver;
@@ -1521,11 +1803,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             }
 
             case TurnState::GameOver:
-                if (newGamePressed)
+                // 対局後の自動解析中(11章参照)は新規対局・棋譜再生を受け付けない
+                // (KataGoの解析チャンネルを取り合わないようにするため)
+                if (newGamePressed && !postGameAnalysisActive)
                 {
                     startNewGame();
                 }
-                else if (reviewStartPressed && !lastSavedGamePath.empty())
+                else if (reviewStartPressed && !postGameAnalysisActive && !lastSavedGamePath.empty())
                 {
                     try
                     {
@@ -1606,36 +1890,45 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             }
 
             renderer.BeginFrame(kClearColorR, kClearColorG, kClearColorB);
-            DrawBoard(renderer, whiteTexture, layout);
-            if (hasAnalysis && territoryOverlayEnabled)
+            if (turnState == TurnState::ViewingMistakeStats)
             {
-                DrawTerritoryOverlay(renderer, displayBoard, layout, whiteTexture, latestAnalysis);
+                DrawMistakeStatsScreen(renderer, width, height, mistakeStats);
             }
-            DrawStones(renderer, displayBoard, layout);
-            if (hasAnalysis && hintOverlayEnabled && turnState == TurnState::HumanToMove)
+            else
             {
-                DrawMoveHints(renderer, layout, whiteTexture, latestAnalysis);
+                DrawBoard(renderer, whiteTexture, layout);
+                if (hasAnalysis && territoryOverlayEnabled)
+                {
+                    DrawTerritoryOverlay(renderer, displayBoard, layout, whiteTexture, latestAnalysis);
+                }
+                DrawStones(renderer, displayBoard, layout);
+                if (hasAnalysis && hintOverlayEnabled && turnState == TurnState::HumanToMove)
+                {
+                    DrawMoveHints(renderer, layout, whiteTexture, latestAnalysis);
+                }
+                if (haveWinrateToShow)
+                {
+                    DrawWinrateBar(renderer, whiteTexture, layout, displayBlackWinrate);
+                    DrawWinrateText(renderer, layout, displayBlackWinrate, displayBlackScoreLead);
+                }
+                else if (turnState == TurnState::Reviewing)
+                {
+                    DrawWinratePending(renderer, layout);
+                }
+                if (turnState == TurnState::Reviewing)
+                {
+                    const std::wstring commentary = BuildMoveCommentary(reviewRecord, reviewMoveIndex,
+                        reviewWinrateCache, reviewBestMoveRowCache, reviewBestMoveColCache, reviewHasCached);
+                    DrawMoveCommentary(renderer, height, commentary);
+                    DrawLossGraph(renderer, width, height, reviewWinrateCache, reviewHasCached, reviewMoveIndex);
+                }
+                DrawHud(renderer, layout, turnState, displayBoard,
+                    reviewMoveIndex, static_cast<int>(reviewRecord.Moves.size()), reviewRecord.Result,
+                    userRating.Rating, currentGameMode, currentAiTargetRating,
+                    placementTracker.Active, placementTracker.CurrentEstimate(),
+                    postGameAnalysisActive, postGameAnalysisIndex,
+                    static_cast<int>(postGameAnalysisMoves.size()));
             }
-            if (haveWinrateToShow)
-            {
-                DrawWinrateBar(renderer, whiteTexture, layout, displayBlackWinrate);
-                DrawWinrateText(renderer, layout, displayBlackWinrate, displayBlackScoreLead);
-            }
-            else if (turnState == TurnState::Reviewing)
-            {
-                DrawWinratePending(renderer, layout);
-            }
-            if (turnState == TurnState::Reviewing)
-            {
-                const std::wstring commentary = BuildMoveCommentary(reviewRecord, reviewMoveIndex,
-                    reviewWinrateCache, reviewBestMoveRowCache, reviewBestMoveColCache, reviewHasCached);
-                DrawMoveCommentary(renderer, height, commentary);
-                DrawLossGraph(renderer, width, height, reviewWinrateCache, reviewHasCached, reviewMoveIndex);
-            }
-            DrawHud(renderer, layout, turnState, displayBoard,
-                reviewMoveIndex, static_cast<int>(reviewRecord.Moves.size()), reviewRecord.Result,
-                userRating.Rating, currentGameMode, currentAiTargetRating,
-                placementTracker.Active, placementTracker.CurrentEstimate());
 
             // 着手以外の操作ボタンを盤下のボタン行に描画する
             for (size_t i = 0; i < buttonRects.size(); ++i)

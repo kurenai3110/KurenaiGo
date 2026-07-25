@@ -139,7 +139,8 @@
     <li><a href="#sgf">9. 棋譜の保存・再生(SGF)</a></li>
     <li><a href="#rating">10. 棋力の数値化(レーティング)</a></li>
     <li><a href="#strength">11. 棋力に応じたAIの強さ設定</a></li>
-    <li><a href="#future">12. 今後の課題</a></li>
+    <li><a href="#mistakes">12. 苦手分野の解析</a></li>
+    <li><a href="#future">13. 今後の課題</a></li>
   </ol>
 </nav>
 
@@ -154,7 +155,8 @@
 <code>kata-analyze</code>による局面解析を使った勝率表示・地合い可視化・着手ヒント(8章)、
 棋譜(SGF)の自動保存・再生・再生中の解析表示と損失グラフ(9章)、レート戦/カジュアルの
 対局モード分けと棋力の数値化(レーティング、10章)、レーティングに応じたAIの強さの自動調整
-(11章)も実装済みです。色の選択・ハンディキャップは未実装です(12章参照)。
+(11章)、レート戦終了時の自動解析による苦手分野の解析(局面ごとの悪手率、12章)も
+実装済みです。色の選択・ハンディキャップは未実装です(13章参照)。
 </p>
 </section>
 
@@ -302,8 +304,9 @@ falseに戻ってしまう(ホバー判定だけが効かなくなる)ことを�
 <tr><td><code>HumanToMove</code></td><td>黒(人間)の手番。クリック/<code>P</code>/<code>R</code>を受け付ける</td></tr>
 <tr><td><code>AIThinking</code></td><td>白(KataGo)の<code>genmove</code>応答待ち。<code>TryGetGenMoveResult</code>をポーリング</td></tr>
 <tr><td><code>WaitingForScore</code></td><td>両者パス後、<code>final_score</code>応答待ち</td></tr>
-<tr><td><code>GameOver</code></td><td>対局終了。<code>V</code>キーで棋譜再生(<code>Reviewing</code>)へ移れる(9.3節参照)。<code>N</code>キーで新規対局(<code>ChoosingGameMode</code>)へ戻れる(9.6節参照)</td></tr>
+<tr><td><code>GameOver</code></td><td>対局終了。<code>V</code>キーで棋譜再生(<code>Reviewing</code>)へ移れる(9.3節参照)。<code>N</code>キーで新規対局(<code>ChoosingGameMode</code>)へ戻れる(9.6節参照)。レート戦終了直後は自動解析(12章)が終わるまで<code>N</code>/<code>V</code>とも無効</td></tr>
 <tr><td><code>Reviewing</code></td><td>棋譜再生中。<code>→</code>/<code>←</code>キーで手を進め戻しする。<code>N</code>キーで新規対局(<code>ChoosingGameMode</code>)へ戻れる(9.6節参照)</td></tr>
+<tr><td><code>ViewingMistakeStats</code></td><td>苦手分野の解析結果を表示中(12.6節参照)。「戻る」ボタンで元の状態(<code>GameOver</code>/<code>Reviewing</code>)に戻る</td></tr>
 </tbody>
 </table>
 <p>
@@ -540,7 +543,7 @@ KataGoは1件ずつしかリクエストを処理できない設計のため、�
 (<code>KataGoClient::ToVertex</code>と同じA〜T(<code>I</code>を除く)+行番号の表記)で文中に
 添えます。この閾値はKataGoを使った解析ツールで一般的に用いられる目安を参考にした一例であり、
 手筋の正しさを厳密に判定するものではありません(死活・シチョウ・ヨセ等の詳細な分類は今後の
-課題とし、12章参照)。
+課題とし、13章参照)。
 </p>
 <p>
 言語化には着手<strong>前</strong>の局面の評価・最有力候補手も必要なため、
@@ -649,7 +652,7 @@ newUserRating = userRating + K * (actualScore - expected)</code></pre>
 異なる由来であることが履歴から分かるようにするため)。起動時は全行を読み、パースできた行数を
 対局数、最後の行の値を現在のレーティングとして復元する(<code>LoadRating</code>、ファイル
 不在・全行パース失敗時は初期値にフォールバックし例外は投げない)。今回のパスでは推移の記録の
-みを行い、グラフ等での可視化(9.4節の損失グラフに相当するもの)は未実装(12章参照)。
+みを行い、グラフ等での可視化(9.4節の損失グラフに相当するもの)は未実装(13章参照)。
 </p>
 </section>
 
@@ -766,16 +769,92 @@ KEY=VALUE,KEY=VALUE,...</code>でコマンドライン上書きできる」と�
 </p>
 </section>
 
+<section id="mistakes">
+<h2>12. 苦手分野の解析</h2>
+<p>
+局面(序盤/中盤/終盤)ごとの悪手率を、レート戦の対局が終了するたびに自動的に集計する。
+KataGoから得られる勝率という事実ベースの情報だけで判定できる範囲に留め、「攻め/受け」
+「死活」等の意味づけ(9.5節の言語化の延長として要望はあるが優先度最低で保留中、13章参照)
+には踏み込まない。
+</p>
+<h3>12.1 局面の3分割(序盤/中盤/終盤)</h3>
+<p>
+科学的な布石理論に基づく境界を判定する手段が無いため、単純にその対局の<strong>総手数に
+対する割合</strong>で3等分する(<code>MistakeStats.h/.cpp</code>の<code>DeterminePhase</code>、
+1/3以下が序盤、2/3以下が中盤、それ以外が終盤)。この閾値は妥当だと考えられる単純な目安で
+あり、囲碁理論上の厳密な布石・中盤・ヨセの境界ではない。
+</p>
+<h3>12.2 分類ロジックの共通化</h3>
+<p>
+9.5節の着手の言語化にインライン化されていた4段階判定(最善手級/やや損な手/緩着/悪手)を
+<code>ClassifyMoveQuality(deltaPercent, isBestMove)</code>として切り出し、
+<code>BuildMoveCommentary</code>と本機能の両方から呼ぶ(判定基準を2箇所に重複させない)。
+</p>
+<h3>12.3 集計のタイミング: レート戦終了時の自動解析</h3>
+<p>
+棋譜再生(9.3節)への集計フックではなく、<strong>レート戦の対局が終了した時点で、
+その対局の全手を自動的に解析</strong>して集計する(カジュアル対局は対象外)。
+<code>FinalizeGameResult</code>呼び出し直後、レート戦の場合のみ
+<code>beginPostGameAnalysis</code>が終了した対局の<code>moveHistory</code>のコピーを保持して
+状態を初期化し、以後は毎フレーム<code>advancePostGameAnalysisIfNeeded</code>が
+<code>requestReviewAnalysisFor</code>(9.4節)と同じ手順(<code>ResetBoard</code>→0手目から
+再生し直す→<code>RequestAnalysis</code>)で1手ずつ解析要求を送る。着手前後の勝率が両方
+揃った時点でその着手を分類し、<code>mistake_stats.txt</code>への重複排除キー
+(<code>"&lt;SGFファイル名&gt;:&lt;手数&gt;"</code>)がまだ無ければ集計へ加算する。
+</p>
+<h3>12.4 解析完了までのブロック</h3>
+<p>
+1手あたり数百ms〜数秒かかり、数百手の対局では完了まで数分かかり得る。ユーザーの選択により、
+<strong>解析が完了するまで「新規対局」「棋譜再生」ボタン・<code>N</code>/<code>V</code>キーを
+無効化する</strong>(<code>ButtonSpec.Enabled</code>と各キー判定の両方で
+<code>postGameAnalysisActive</code>をガードする)。これにより、自動解析中に他の経路
+(新しい対局のライブ解析、棋譜再生の解析)がKataGoの解析チャンネルを同時に使うことが
+無くなるため、複数の要求元が競合する問題を考えずに済む(この自動解析だけが唯一の
+解析要求元になる)。HUDには「対局後の解析中 (42/183手)」のように進捗を表示する。
+</p>
+<div class="note">
+<p>
+<strong>KataGo通信の失敗は解析を打ち切るのみで対局・アプリ全体を止めない</strong>:
+自動解析は補助機能であり、かつ完了までナビゲーションをブロックする設計のため、途中で
+KataGoとの通信が(何らかの理由で)失敗した場合にそのまま止まってしまうとブロックが解除
+されなくなる。そのため<code>advancePostGameAnalysisIfNeeded</code>のKataGo呼び出し全体を
+try/catchで囲み、例外時は<code>error.log</code>に記録したうえで
+<code>postGameAnalysisActive</code>をfalseに戻し、ブロックを解除する。
+</p>
+</div>
+<h3>12.5 永続化(mistake_stats.txt)</h3>
+<p>
+<code>rating_history.txt</code>と同じ「追記型ログ+読み込み時に集計・重複排除」のパターンを
+踏襲する。1行のフォーマットは
+<code>&lt;SGFファイル名&gt; &lt;手数&gt; &lt;phase&gt; &lt;quality&gt;</code>
+(例: <code>game_20260725_201055.sgf 42 Middle Loose</code>)。起動時に
+<code>LoadMistakeStats</code>が全行を読み、局面×分類ごとの手数と、集計済みキーの集合
+(<code>SeenKeys</code>)の両方を1回のスキャンで復元する(ファイル不在・パース失敗行は
+無視し例外を投げない)。
+</p>
+<h3>12.6 表示: 「苦手分野」ボタン</h3>
+<p>
+<code>TurnState::ViewingMistakeStats</code>を追加し、<code>GameOver</code>/<code>Reviewing</code>
+のボタン行に「苦手分野」ボタンを追加する(解析中でも閲覧できる。KataGoの解析チャンネルを
+使わない純粋な読み取り表示のため、12.4節のブロックの対象外)。押すと盤の代わりに、
+局面ごとの4段階の内訳・合計手数(<code>BuildMistakeStatsLines</code>)を表示し、
+もっとも「緩着+悪手」の割合が高い局面を明示する。合計手数が10未満の局面には
+「データが少なめです」と注記し、少ないサンプル数からの過信を避ける。「戻る」ボタンで
+元の状態(<code>GameOver</code>または<code>Reviewing</code>)に戻る。
+</p>
+</section>
+
 <section id="future">
-<h2>12. 今後の課題</h2>
+<h2>13. 今後の課題</h2>
 <ul>
 <li>対局中の動的な強さ変更(現状KataGo起動後に強さを変える確立された方法が無いため、
 11章の実装は対局開始時の1回のみとしている)</li>
 <li><code>playoutDoublingAdvantage</code>・人間らしい打ち方(human-like SL profile等)を
 使ったより自然な弱め方(この<code>gtp.cfg</code>・このKataGoビルドでの対応状況を検証して
 いないため見送った)</li>
-<li>着差による重み付け・複数対局を跨いだ苦手分野の解析(9.5節の悪手判定ロジックを
-土台にする想定)</li>
+<li>保存済み過去対局の遡及的な一括解析(12章の自動解析は新たに終了したレート戦のみが対象)</li>
+<li>苦手分野の推移をグラフ表示する機能(12章では集計結果のテキスト表示のみ)</li>
+<li>着差による重み付けを苦手分野の集計へ取り入れる(現状は勝率変化ベースの4段階分類のみ)</li>
 <li>レート推移のグラフ描画(<code>rating_history.txt</code>へのデータ記録自体は10章で
 実装済みだが、可視化画面は未実装)</li>
 <li>着手の意味・役割そのものの言語化(「最善手級/やや損/緩着/悪手」という勝率変化ベースの
