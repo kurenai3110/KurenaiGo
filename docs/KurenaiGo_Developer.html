@@ -143,7 +143,8 @@
     <li><a href="#rating">10. 棋力の数値化(レーティング)</a></li>
     <li><a href="#strength">11. 棋力に応じたAIの強さ設定</a></li>
     <li><a href="#mistakes">12. 苦手分野の解析</a></li>
-    <li><a href="#future">13. 今後の課題</a></li>
+    <li><a href="#board-message">13. 投了・対局終了等の通知(盤上メッセージ)</a></li>
+    <li><a href="#future">14. 今後の課題</a></li>
   </ol>
 </nav>
 
@@ -159,7 +160,7 @@ Protocol)経由の子プロセスとして起動しての対局(人間=黒、Kat
 棋譜(SGF)の自動保存・再生・再生中の解析表示と損失グラフ(9章)、レート戦/カジュアルの
 対局モード分けと棋力の数値化(レーティング、盤の大きさごとに別々に記録、10章)、レーティングに
 応じたAIの強さの自動調整(11章)、レート戦終了時の自動解析による苦手分野の解析(局面ごとの
-悪手率、12章)も実装済みです。色の選択・ハンディキャップは未実装です(13章参照)。
+悪手率、12章)も実装済みです。色の選択・ハンディキャップは未実装です(14章参照)。
 </p>
 </section>
 
@@ -320,19 +321,20 @@ falseに戻ってしまう(ホバー判定だけが効かなくなる)ことを�
 現在の<code>TurnState</code>とアゲハマ数(<code>GoBoard::CapturesBy</code>)は、盤の下マージンに
 <code>DrawText</code>で常時表示します(<code>DrawHud</code>、<code>BuildStatusText</code>)。
 <code>DrawText</code>はかな漢字を含むUnicode文字に対応しているため、表示文言は日本語です。
-対局終了・投了・通信エラーのような割り込みが必要な通知は、既存のエラーダイアログのまま
-残しています(進行中の状態はHUD、区切りとなるイベントはダイアログという役割分担)。
+対局終了・投了・通信エラーのような割り込みが必要な通知は、<code>BoardMessageState</code>
+(盤上パネル、後述)で表示します(進行中の状態はHUD、区切りとなるイベントは盤上パネルという
+役割分担)。
 </p>
 <div class="note">
 <p>
 <strong>文字化けの修正</strong>: 本プロジェクトは<code>/utf-8</code>オプションでコンパイルしており、
 ナロー文字列リテラル(<code>"..."</code>)はUTF-8でエンコードされる。これを<code>MessageBoxA</code>に
 そのまま渡すと、ANSI版はシステムのコードページ(日本語環境では多くの場合Shift-JIS)で解釈するため
-日本語部分が文字化けする。<code>Main.cpp</code>の<code>ShowMessageBoxUtf8</code>で
-<code>MultiByteToWideChar(CP_UTF8, ...)</code>によりUTF-16へ変換してから<code>MessageBoxW</code>へ
-渡すことでこれを解消している。<code>KataGoClient</code>の例外メッセージ(<code>LastError()</code>)や
-<code>std::exception::what()</code>も同様にUTF-8として扱われるため、すべての通知はこのヘルパー
-経由で表示している。
+日本語部分が文字化けする。<code>Main.cpp</code>の<code>Utf8ToWide</code>で
+<code>MultiByteToWideChar(CP_UTF8, ...)</code>によりUTF-16へ変換してから表示することでこれを
+解消している。<code>KataGoClient</code>の例外メッセージ(<code>LastError()</code>)や
+<code>std::exception::what()</code>も同様にUTF-8として扱われるため、<code>showBoardMessage</code>
+(盤上パネル)・<code>ShowMessageBoxUtf8</code>(<code>MessageBoxW</code>ラッパー)ともこの変換を経由する。
 </p>
 </div>
 <div class="note">
@@ -344,11 +346,12 @@ falseに戻ってしまう(ホバー判定だけが効かなくなる)ことを�
 (<code>PostMessage</code>で送った<code>WM_KEYDOWN</code>/<code>WM_KEYUP</code>がメインウィンドウの
 ウィンドウプロシージャには届くものの、キー入力状態としては一切反映されなくなる現象として現れる)。
 11章のAI強さ設定機能の実装中、対局モード選択の直後にキー入力を受け付ける必要があるテストで発覚した。
-<code>ShowMessageBoxUtf8</code>に<code>HWND owner</code>引数を追加し、メインループ内の呼び出し箇所は
-すべて<code>renderer.GetWindowHandle()</code>を渡すよう修正した(アプリ全体の既存のダイアログにも
-同じ問題があった可能性があり、あわせて修正している)。唯一、<code>wWinMain</code>最外周の致命的
-エラーハンドラ(<code>renderer</code>自体の構築に失敗した場合にも実行され得る)だけは
-<code>renderer</code>が有効とは限らないため<code>nullptr</code>のままとしている。
+<code>ShowMessageBoxUtf8</code>に<code>HWND owner</code>引数を追加し、当時のメインループ内の
+呼び出し箇所はすべて<code>renderer.GetWindowHandle()</code>を渡すよう修正した。その後13章の通り
+メインループ内の通知はすべて<code>showBoardMessage</code>(盤上パネル)へ置き換えたため、現在
+<code>ShowMessageBoxUtf8</code>を呼ぶのは<code>wWinMain</code>最外周の致命的エラーハンドラ
+(<code>renderer</code>自体の構築に失敗した場合にも実行され得るため、フォーカス云々より前の
+段階でありownerを渡せない)のみで、そこは元々<code>nullptr</code>のままとしている。
 </p>
 </div>
 </section>
@@ -622,7 +625,7 @@ SGFの座標は列→行の順でa〜s(0〜18)、行は盤面<strong>上端</str
 (<code>KataGoClient::ToVertex</code>と同じA〜T(<code>I</code>を除く)+行番号の表記)で文中に
 添えます。この閾値はKataGoを使った解析ツールで一般的に用いられる目安を参考にした一例であり、
 手筋の正しさを厳密に判定するものではありません(死活・シチョウ・ヨセ等の詳細な分類は今後の
-課題とし、13章参照)。
+課題とし、14章参照)。
 </p>
 <p>
 言語化には着手<strong>前</strong>の局面の評価・最有力候補手も必要ですが、9.4節の一括解析は
@@ -746,7 +749,7 @@ newUserRating = userRating + K * (actualScore - expected)</code></pre>
 異なる由来であることが履歴から分かるようにするため)。起動時は全行を読み、パースできた行数を
 対局数、最後の行の値を現在のレーティングとして復元する(<code>LoadRating</code>、ファイル
 不在・全行パース失敗時は初期値にフォールバックし例外は投げない)。今回のパスでは推移の記録の
-みを行い、グラフ等での可視化(9.4節の損失グラフに相当するもの)は未実装(13章参照)。
+みを行い、グラフ等での可視化(9.4節の損失グラフに相当するもの)は未実装(14章参照)。
 </p>
 <h3>10.5 盤の大きさ(9路/13路/19路)ごとの分離</h3>
 <p>
@@ -1154,7 +1157,7 @@ Human SLモデル未配置時のフォールバック経路(19路・カジュア
 <p>
 局面(序盤/中盤/終盤)ごとの悪手率を、レート戦の対局が終了するたびに自動的に集計する。
 KataGoから得られる勝率という事実ベースの情報だけで判定できる範囲に留め、「攻め/受け」
-「死活」等の意味づけ(9.5節の言語化の延長として要望はあるが優先度最低で保留中、13章参照)
+「死活」等の意味づけ(9.5節の言語化の延長として要望はあるが優先度最低で保留中、14章参照)
 には踏み込まない。
 </p>
 <h3>12.1 局面の3分割(序盤/中盤/終盤)</h3>
@@ -1233,8 +1236,51 @@ try/catchで囲み、1局面ぶんの解析失敗は<code>BatchAnalysisItem::Res
 </p>
 </section>
 
+<section id="board-message">
+<h2>13. 投了・対局終了等の通知(盤上メッセージ)</h2>
+<p>
+初期レーティング確定・投了・対局終了・KataGoとの通信エラーの通知は、<code>ShowMessageBoxUtf8</code>
+(<code>MessageBoxW</code>ラッパー、6.1節)によるネイティブダイアログとして実装していたが、
+「盤上で完結させたい」という要件に合わせて<code>BoardMessageState</code>による盤上パネル表示へ
+置き換えた。ネイティブダイアログは入力を完全にブロックするため実装が容易だった反面、盤・ボタンとは
+見た目が浮いてしまう問題があった。
+</p>
+<p>
+<code>BoardMessageState</code>(<code>Active</code>・<code>Text</code>・<code>Caption</code>・
+<code>IsError</code>)をメインループのローカル変数として持ち、<code>showBoardMessage(utf8Text,
+utf8Caption, isError)</code>ラムダで<code>Utf8ToWide</code>変換込みでセットする。呼び出し側の
+引数は従来の<code>ShowMessageBoxUtf8</code>とほぼ同じにしたため、置き換えは機械的に行えた。
+描画(<code>DrawBoardMessage</code>)は、ウィンドウ全体を薄暗く覆うオーバーレイ(右側のボタン列も
+含めて操作不可であることを見た目でも示す)+盤中央(<code>layout.CenterX/CenterY</code>、他の
+盤上ボタンと同じ基準)のパネル(キャプション+本文複数行+OKボタン)という構成で、他のすべての
+描画より後(最前面)に行う。<code>KurenaiEngine2D::DrawText</code>は改行(<code>\n</code>)を
+解釈しないため、本文は<code>SplitLines</code>で分割してから1行ずつ描画する
+(<code>"対局終了\n結果: B+3.5"</code>のような複数行メッセージ用)。
+</p>
+<p>
+<strong>モーダルの代替としての入力遮断</strong>: ネイティブダイアログと違い盤上パネルは
+<code>PumpEvents</code>を止めないため、表示中も他のボタン・キー入力の処理自体は素通りしてしまう。
+これを防ぐため、<code>boardMessage.Active</code>の間は次の3経路すべてを無効化する:
+(1)盤サイズ/対局モード選択・「戻る」・カジュアル強さ選択のクリック判定は、6.1節で導入した
+<code>clickConsumed</code>の初期値を<code>boardMessage.Active</code>にすることで自動的に
+無効化される、(2)右側縦列の通常ボタン(パス・投了・新規対局等)のクリック判定にも
+<code>&amp;&amp; !clickConsumed</code>を追加した、(3)<code>P</code>/<code>R</code>/<code>V</code>/
+<code>←</code>/<code>→</code>/<code>N</code>キーの押下フラグは読み取った直後に
+<code>boardMessage.Active</code>ならすべて<code>false</code>へ戻し、<code>T</code>/<code>H</code>
+キーのトグルも同様に無効化する。OKボタンのクリック・<code>Enter</code>キーだけは
+<code>clickConsumed</code>を経由しない独立した判定にし、唯一の入力経路として残す。
+</p>
+<p>
+この置き換えの対象はメインループ内の6箇所(初期レーティング確定・人間投了・KataGo投了・
+KataGo通信エラー・KataGo着手反映エラー・終局)のみで、<code>wWinMain</code>最外周の致命的
+エラーハンドラ(前章参照)は対象外とした。メインループが終了した後(または開始前)に実行される
+経路であり、その時点では描画自体が行えない(または<code>renderer</code>が有効とは限らない)ため、
+従来どおり<code>ShowMessageBoxUtf8</code>によるネイティブダイアログのままにしている。
+</p>
+</section>
+
 <section id="future">
-<h2>13. 今後の課題</h2>
+<h2>14. 今後の課題</h2>
 <ul>
 <li>対局中の動的な強さ変更(現状KataGo起動後に強さを変える確立された方法が無いため、
 11章の実装は対局開始時の1回のみとしている)</li>

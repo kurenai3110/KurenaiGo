@@ -234,6 +234,20 @@ namespace
     constexpr float kButtonSeparatorMarginX = 12.0f; // 列の左右端からの余白
     constexpr float kButtonSeparatorColorR = 0.45f, kButtonSeparatorColorG = 0.45f, kButtonSeparatorColorB = 0.48f;
 
+    // 盤上に表示する通知メッセージ(投了・対局終了・KataGoエラー等、BoardMessageState参照)の見た目。
+    // 背景パネルは上部帯(kTopPanelColor*)と統一した配色にし、枠線のみ通常/エラーで色を変える
+    constexpr float kMessagePanelWidth = 460.0f;
+    constexpr float kMessagePanelPaddingY = 28.0f; // パネル上下端と内容(キャプション/本文/ボタン)の余白
+    constexpr float kMessageCaptionFontSize = 23.0f;
+    constexpr float kMessageBodyFontSize = 19.0f;
+    constexpr float kMessageLineHeight = 27.0f; // 本文の行間(複数行メッセージ用)
+    constexpr float kMessageCaptionGap = 18.0f; // キャプションと本文の間隔
+    constexpr float kMessageButtonGap = 24.0f;  // 本文とOKボタンの間隔
+    constexpr float kMessageOkButtonWidth = 140.0f;
+    constexpr float kMessageOkButtonHeight = 44.0f;
+    constexpr float kMessageOverlayAlpha = 0.55f; // パネルの背後を暗くする全画面オーバーレイの濃さ
+    constexpr float kMessageErrorBorderColorR = 0.80f, kMessageErrorBorderColorG = 0.35f, kMessageErrorBorderColorB = 0.35f;
+
     const wchar_t* kWindowTitle = L"KurenaiGo";
 
     // 現在のウィンドウサイズから盤のレイアウト(中心・格子の一辺・目の間隔)を求める
@@ -651,6 +665,18 @@ namespace
         Casual, // カジュアル。SGF保存は行うがレーティングには影響しない
     };
 
+    // 投了・対局終了・KataGoエラー等の通知を盤上に表示するための状態。ネイティブダイアログ
+    // (MessageBoxW)は入力を完全にブロックしてしまい「盤上で完結させたい」という要件に合わない
+    // ため、盤上にパネル+OKボタンを描画し、次のクリック/Enterキーで閉じる方式にする
+    // (Activeの間は他の操作(着手・ボタン・キー)をすべて無効化し、モーダルの代わりとする)
+    struct BoardMessageState
+    {
+        bool Active = false;
+        std::wstring Text;
+        std::wstring Caption;
+        bool IsError = false; // trueの間はパネルの枠線を警告色にする
+    };
+
     // レーティング(0〜上限なし)↔段級位インデックスの変換(11.6節参照)。
     // 段級位インデックスは30級=0、1級=29、1段=30、9段=38、以降10段・11段…も上限なく続く
     // 整数の目安。1段のレーティングがちょうど1000になるよう、レーティングを
@@ -977,6 +1003,7 @@ namespace
         BackFromStats,
         BackToBoardSize, // ChoosingGameMode→ChoosingBoardSizeへ戻る
         BackToGameMode,  // ChoosingCasualStrength→ChoosingGameModeへ戻る
+        DismissMessage,  // 盤上メッセージ(BoardMessageState)のOKボタン
     };
 
     // ボタン列(画面右側の縦列)内での配置グループ。対局状態(turnState)によって中央グループの
@@ -1301,6 +1328,92 @@ namespace
             renderer.DrawText(centerX, centerY, label, style.FontSize,
                 kButtonDisabledTextColorR, kButtonDisabledTextColorG, kButtonDisabledTextColorB, 1.0f, true);
         }
+    }
+
+    // メッセージ本文をL'\n'で分割する。KurenaiEngine2D::DrawTextは改行を解釈しないため、
+    // 複数行メッセージ(例: "対局終了\n結果: B+3.5")は行ごとに個別のDrawText呼び出しに分ける必要がある
+    std::vector<std::wstring> SplitLines(const std::wstring& text)
+    {
+        std::vector<std::wstring> lines;
+        size_t start = 0;
+        while (true)
+        {
+            const size_t pos = text.find(L'\n', start);
+            if (pos == std::wstring::npos)
+            {
+                lines.push_back(text.substr(start));
+                break;
+            }
+            lines.push_back(text.substr(start, pos - start));
+            start = pos + 1;
+        }
+        return lines;
+    }
+
+    // BoardMessageStateのパネル全体(キャプション+本文複数行+OKボタン+余白)の高さを求める。
+    // LayoutMessageOkButton・DrawBoardMessageの両方で同じ値が要るため、共通の計算として切り出す
+    float ComputeMessagePanelHeight(size_t lineCount)
+    {
+        const float bodyHeight = static_cast<float>(lineCount) * kMessageLineHeight;
+        return kMessagePanelPaddingY * 2.0f + kMessageCaptionFontSize + kMessageCaptionGap +
+            bodyHeight + kMessageButtonGap + kMessageOkButtonHeight;
+    }
+
+    // BoardMessageState表示中のOKボタンを、盤中央(layout.CenterX/CenterY)基準のパネル内、
+    // パネル下端寄りに配置する(常に1個だけなので固定サイズ)
+    ButtonRect LayoutMessageOkButton(const BoardLayout& layout, float panelHeight)
+    {
+        ButtonRect rect;
+        rect.Id = ButtonId::DismissMessage;
+        rect.Width = kMessageOkButtonWidth;
+        rect.Height = kMessageOkButtonHeight;
+        rect.CenterX = layout.CenterX;
+        rect.CenterY = layout.CenterY - panelHeight * 0.5f + kMessagePanelPaddingY + kMessageOkButtonHeight * 0.5f;
+        rect.Enabled = true;
+        rect.Active = false;
+        return rect;
+    }
+
+    // 投了・対局終了・KataGoエラー等の通知(BoardMessageState)を描画する。パネル自体は他の
+    // 盤上ボタンと同じく盤中央(layout.CenterX/CenterY)基準で配置し、背後の薄暗いオーバーレイのみ
+    // ウィンドウ全体(右側のボタン列も含む)を覆って、ネイティブダイアログ同様すべての操作を
+    // 見た目上もブロックする。okButtonはLayoutMessageOkButtonで求めた位置を渡す(クリック判定と共有)
+    void DrawBoardMessage(KurenaiEngine2D& renderer, const BoardLayout& layout, uint32_t windowWidth,
+        uint32_t windowHeight, const BoardMessageState& message, const ButtonRect& okButton,
+        bool okHovered, bool okPressed)
+    {
+        const std::vector<std::wstring> lines = SplitLines(message.Text);
+        const float panelHeight = ComputeMessagePanelHeight(lines.size());
+
+        const float overlayCenterX = static_cast<float>(windowWidth) * 0.5f;
+        const float overlayCenterY = static_cast<float>(windowHeight) * 0.5f;
+        renderer.DrawRoundedRect(overlayCenterX, overlayCenterY,
+            static_cast<float>(windowWidth), static_cast<float>(windowHeight),
+            0.0f, 0.0f, 0.0f, 0.0f, kMessageOverlayAlpha);
+
+        const float centerX = layout.CenterX;
+        const float centerY = layout.CenterY;
+        const float borderR = message.IsError ? kMessageErrorBorderColorR : kTopPanelBorderColorR;
+        const float borderG = message.IsError ? kMessageErrorBorderColorG : kTopPanelBorderColorG;
+        const float borderB = message.IsError ? kMessageErrorBorderColorB : kTopPanelBorderColorB;
+        renderer.DrawRoundedRect(centerX, centerY, kMessagePanelWidth, panelHeight, kTopPanelCornerRadius,
+            kTopPanelColorR, kTopPanelColorG, kTopPanelColorB, 1.0f,
+            kTopPanelBorderThickness, borderR, borderG, borderB, 1.0f);
+
+        float y = centerY + panelHeight * 0.5f - kMessagePanelPaddingY;
+        renderer.DrawText(centerX, y, message.Caption, kMessageCaptionFontSize,
+            kButtonTextColorR, kButtonTextColorG, kButtonTextColorB, 1.0f, true,
+            TextAlign::Center, TextVerticalAlign::Top);
+
+        y -= (kMessageCaptionFontSize + kMessageCaptionGap);
+        for (const std::wstring& line : lines)
+        {
+            renderer.DrawText(centerX, y, line, kMessageBodyFontSize,
+                kHudColorR, kHudColorG, kHudColorB, 1.0f, false, TextAlign::Center, TextVerticalAlign::Top);
+            y -= kMessageLineHeight;
+        }
+
+        DrawButton(renderer, okButton, L"OK", okHovered, okPressed);
     }
 
     // 現在時刻から"game_YYYYMMDD_HHMMSS.sgf"形式のファイル名を組み立てる
@@ -1835,6 +1948,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         bool territoryOverlayEnabled = false;
         bool hintOverlayEnabled = false;
 
+        // 投了・対局終了・KataGoエラー等の通知(盤上表示、BoardMessageState参照)。
+        // 呼び出し側は従来のShowMessageBoxUtf8と同じ(UTF-8のstd::string)引数で呼べるようにする
+        BoardMessageState boardMessage;
+        const auto showBoardMessage = [&](const std::string& utf8Text, const std::string& utf8Caption, bool isError = false)
+        {
+            boardMessage.Active = true;
+            boardMessage.Text = Utf8ToWide(utf8Text);
+            boardMessage.Caption = Utf8ToWide(utf8Caption);
+            boardMessage.IsError = isError;
+        };
+
         while (!renderer.ShouldClose())
         {
             renderer.PumpEvents();
@@ -1880,23 +2004,51 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             // 盤中央に配置したボタン群は、クリックで遷移した直後のturnStateに応じて別のボタンが
             // 同じ座標に現れることがあるため(例: 「カジュアル」ボタンの座標に、遷移直後の
             // カジュアル強さ選択のグリッドが重なる)、フラグなしだと同一クリックで2段階の選択が
-            // 連続処理されてしまう(強さ選択画面が一瞬で飛ばされる不具合の原因)
-            bool clickConsumed = false;
+            // 連続処理されてしまう(強さ選択画面が一瞬で飛ばされる不具合の原因)。
+            // 盤上メッセージ(boardMessage)表示中は、初期値をtrueにしてOKボタン以外の
+            // クリックをすべて無効化する(モーダルの代わりとするため)
+            bool clickConsumed = boardMessage.Active;
             bool passPressed = renderer.WasKeyPressed('P');
             bool resignPressed = renderer.WasKeyPressed('R');
             bool reviewStartPressed = renderer.WasKeyPressed('V');
             bool reviewPrevPressed = renderer.WasKeyPressed(VK_LEFT);
             bool reviewNextPressed = renderer.WasKeyPressed(VK_RIGHT);
             bool newGamePressed = renderer.WasKeyPressed('N');
+            if (boardMessage.Active)
+            {
+                // メッセージ表示中はキーボードショートカットもすべて無効化する(OKボタンでの
+                // 確認を必須にするため。ネイティブダイアログが全入力をブロックしていた挙動を踏襲)
+                passPressed = false;
+                resignPressed = false;
+                reviewStartPressed = false;
+                reviewPrevPressed = false;
+                reviewNextPressed = false;
+                newGamePressed = false;
+            }
 
-            if (renderer.WasKeyPressed('T'))
+            if (renderer.WasKeyPressed('T') && !boardMessage.Active)
             {
                 territoryOverlayEnabled = !territoryOverlayEnabled;
             }
 
-            if (renderer.WasKeyPressed('H'))
+            if (renderer.WasKeyPressed('H') && !boardMessage.Active)
             {
                 hintOverlayEnabled = !hintOverlayEnabled;
+            }
+
+            // 盤上メッセージ(投了・対局終了・KataGoエラー等)のOKボタン。表示中のみ配置し、
+            // クリックまたはEnterキーで閉じる(ネイティブダイアログのEnterで閉じる挙動を踏襲)。
+            // clickConsumedより先に(独立して)判定する唯一の入力経路にする
+            if (boardMessage.Active)
+            {
+                const std::vector<std::wstring> messageLines = SplitLines(boardMessage.Text);
+                const float messagePanelHeight = ComputeMessagePanelHeight(messageLines.size());
+                const ButtonRect okButton = LayoutMessageOkButton(layout, messagePanelHeight);
+                const bool okHit = mouseInWindow && clicked && IsPointInButton(okButton, mouseWorldX, mouseWorldY);
+                if (okHit || renderer.WasKeyPressed(VK_RETURN))
+                {
+                    boardMessage.Active = false;
+                }
             }
 
             // 着手以外の操作(パス・投了・地合い表示切替・着手ヒント表示切替・棋譜再生・新規対局・
@@ -2103,7 +2255,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 }
             }
 
-            if (mouseInWindow && clicked)
+            if (mouseInWindow && clicked && !clickConsumed)
             {
                 for (const ButtonRect& button : buttonRects)
                 {
@@ -2165,8 +2317,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         const std::string message =
                             "初期レーティングの推定が収束したため、対局を終了します。\n確定レーティング: " +
                             std::to_string(std::lround(CurrentUserRating().Rating));
-                        ShowMessageBoxUtf8(renderer.GetWindowHandle(), message,
-                            "KurenaiGo - 初期レーティング確定", MB_OK | MB_ICONINFORMATION);
+                        showBoardMessage(message, "初期レーティング確定");
                         turnState = TurnState::GameOver;
                     }
                 }
@@ -2281,7 +2432,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     {
                         beginPostGameAnalysis(lastSavedGamePath);
                     }
-                    ShowMessageBoxUtf8(renderer.GetWindowHandle(), "投了しました。KataGoの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
+                    showBoardMessage("投了しました。KataGoの勝ちです。", "対局終了");
                     turnState = TurnState::GameOver;
                 }
                 else if (passPressed)
@@ -2322,7 +2473,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     if (result.Failed)
                     {
                         const std::string message = "KataGoとの通信でエラーが発生しました:\n" + kataGo.LastError();
-                        ShowMessageBoxUtf8(renderer.GetWindowHandle(), message, "KurenaiGo - KataGoエラー", MB_OK | MB_ICONERROR);
+                        showBoardMessage(message, "KataGoエラー", true);
                         turnState = TurnState::GameOver;
                     }
                     else if (result.IsResign)
@@ -2333,7 +2484,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         {
                             beginPostGameAnalysis(lastSavedGamePath);
                         }
-                        ShowMessageBoxUtf8(renderer.GetWindowHandle(), "KataGoが投了しました。あなたの勝ちです。", "KurenaiGo", MB_OK | MB_ICONINFORMATION);
+                        showBoardMessage("KataGoが投了しました。あなたの勝ちです。", "対局終了");
                         turnState = TurnState::GameOver;
                     }
                     else if (result.IsPass)
@@ -2353,8 +2504,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     else if (!board.TryPlay(result.Row, result.Col, Stone::White))
                     {
                         // KataGoは常に合法手を返す前提のため、ここに来るのは想定外の異常事態
-                        ShowMessageBoxUtf8(renderer.GetWindowHandle(), "KataGoの着手を反映できませんでした(想定外の座標)。",
-                            "KurenaiGo - エラー", MB_OK | MB_ICONERROR);
+                        showBoardMessage("KataGoの着手を反映できませんでした(想定外の座標)。", "エラー", true);
                         turnState = TurnState::GameOver;
                     }
                     else
@@ -2379,7 +2529,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         beginPostGameAnalysis(lastSavedGamePath);
                     }
                     const std::string message = "対局終了\n結果: " + score;
-                    ShowMessageBoxUtf8(renderer.GetWindowHandle(), message, "KurenaiGo - 対局終了", MB_OK | MB_ICONINFORMATION);
+                    showBoardMessage(message, "対局終了");
                     turnState = TurnState::GameOver;
                 }
                 break;
@@ -2605,6 +2755,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 const float y = GridIndexToCoordinate(layout, layout.CenterY, hoverRow);
                 const float previewRadius = layout.LineSpacing * 0.46f;
                 renderer.DrawCircle(x, y, previewRadius, 0.2f, 0.2f, 0.2f, 0.35f);
+            }
+
+            // 盤上メッセージ(投了・対局終了・KataGoエラー等)。他のすべての要素より手前(最後)に
+            // 描画し、背後を薄暗く覆ってモーダルであることを示す
+            if (boardMessage.Active)
+            {
+                const std::vector<std::wstring> messageLines = SplitLines(boardMessage.Text);
+                const float messagePanelHeight = ComputeMessagePanelHeight(messageLines.size());
+                const ButtonRect okButton = LayoutMessageOkButton(layout, messagePanelHeight);
+                const bool okHovered = mouseInWindow && IsPointInButton(okButton, mouseWorldX, mouseWorldY);
+                const bool okPressed = okHovered && isMouseDown;
+                DrawBoardMessage(renderer, layout, width, height, boardMessage, okButton, okHovered, okPressed);
             }
 
             renderer.EndFrame(true);
