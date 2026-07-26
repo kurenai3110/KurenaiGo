@@ -39,8 +39,9 @@ KurenaiEngine/              描画エンジン(Git submodule)
 Build/
   Bin/x64/Debug/             ビルド成果物の出力先(Git管理対象外)
     KurenaiGo.exe            本体
-    KurenaiEngine.dll        ビルド後処理でコピーされる
-    Shaders/                 ビルド後処理でコピーされるシェーダ一式(KurenaiEngine.dllが実行時に参照)
+    KurenaiEngineLibrary.dll ビルド後処理でコピーされる(共通基盤)
+    KurenaiEngine2D.dll      ビルド後処理でコピーされる(2D描画)
+    Shaders/                 ビルド後処理でコピーされるシェーダ一式(KurenaiEngine2D.dllが実行時に参照)
     Assets/                  ビルド後処理でコピーされる効果音
     KataGo/                  KataGo本体・ニューラルネット(手動配置。下記セットアップ参照)
     Games/                   対局終了時に自動保存される棋譜(SGF、実行時に生成)
@@ -85,10 +86,12 @@ KurenaiEngineは内部でassimp・DirectXTexを使用するため、事前にビ
 MSBuild KurenaiGo.sln /p:Configuration=Debug /p:Platform=x64
 ```
 
-`KurenaiGo.vcxproj` は `KurenaiEngine.vcxproj` をプロジェクト参照しているため、上記コマンド一回で
-KurenaiEngine.dllも含めてビルドされます。`KurenaiGo.exe` は本リポジトリ直下の
-`Build\Bin\x64\Debug\` に出力され、ビルド後処理(PostBuildEvent)で `KurenaiEngine.dll`(と`.pdb`)・
-`Shaders\`(KurenaiEngine.dllが実行時に参照するシェーダ一式)・`Assets\`(効果音)が同じフォルダへ
+`KurenaiGo.vcxproj` は `KurenaiEngineLibrary.vcxproj`・`KurenaiEngine2D.vcxproj` をプロジェクト参照
+しているため、上記コマンド一回でこれらも含めてビルドされます(KurenaiEngineは共通基盤/3D/2Dの
+3DLLに分割されており、2D専用アプリであるKurenaiGoはLibraryと2Dの2つのみを使用します)。
+`KurenaiGo.exe` は本リポジトリ直下の `Build\Bin\x64\Debug\` に出力され、ビルド後処理
+(PostBuildEvent)で `KurenaiEngineLibrary.dll`・`KurenaiEngine2D.dll`(と各`.pdb`)・
+`Shaders\`(KurenaiEngine2D.dllが実行時に参照するシェーダ一式)・`Assets\`(効果音)が同じフォルダへ
 コピーされ、空の `KataGo\` フォルダも作成されます(次の手順で中身を配置する)。実行に必要な
 ものはすべて `Build\Bin\x64\Debug\` フォルダ1つに集約されるため、このフォルダごとコピーすれば
 他の場所でも実行できます。

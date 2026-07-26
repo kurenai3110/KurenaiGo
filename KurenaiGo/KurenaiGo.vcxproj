@@ -45,11 +45,13 @@
   <PropertyGroup Label="UserMacros" />
   <!--
     出力先は本リポジトリ自身のBuild\Bin配下(KurenaiEngineとは独立)。実行に必要なもの
-    (KurenaiEngine.dll、Shaders\、Assets\の効果音、KataGo\のKataGo本体)はすべてPostBuildEventで
-    実行ファイルと同じフォルダへ集約する(PathUtil::ResolveAppDataPathも参照)。これにより
-    Build\Bin\<Platform>\<Config>\ フォルダごとコピーするだけで動作する。KurenaiEngine2D/3Dは
-    シェーダファイルをKurenaiEngine.dll自身のフォルダ基準(GetModuleHandleExWでDLL自身の
-    モジュールを取得)で解決するため、KurenaiEngine.dllをコピーする際にShadersフォルダも
+    (KurenaiEngineLibrary.dll/KurenaiEngine2D.dll、Shaders\、Assets\の効果音、KataGo\のKataGo本体)は
+    すべてPostBuildEventで実行ファイルと同じフォルダへ集約する(PathUtil::ResolveAppDataPathも参照)。
+    これによりBuild\Bin\<Platform>\<Config>\ フォルダごとコピーするだけで動作する。KurenaiEngineは
+    共通基盤(KurenaiEngineLibrary)と3D/2D(KurenaiEngine3D/KurenaiEngine2D)の3DLLに分割されており、
+    2D専用アプリであるKurenaiGoはLibraryと2Dの2つのみを使用する(3D用DLL・Assetsは同梱不要)。
+    KurenaiEngine2Dはシェーダファイルを自身のDLLフォルダ基準(GetModuleHandleExWでDLL自身の
+    モジュールを取得)で解決するため、KurenaiEngine2D.dllをコピーする際にShadersフォルダも
     一緒にKurenaiGoのOutDirへコピーする必要がある。石・格子線・星はDrawCircle/DrawLineで
     直接描画するためテクスチャは使用していないが、効果音(WAV)はTools/generate_sound_effects.ps1で
     生成しAssets\Sounds\にコミットしている。
@@ -77,9 +79,12 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <PostBuildEvent>
-      <Command>xcopy /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\KurenaiEngine.dll" "$(OutDir)"
-xcopy /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\KurenaiEngine.pdb" "$(OutDir)"
-xcopy /E /I /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\Shaders" "$(OutDir)Shaders"
+      <Command>set KURENAI_BIN=$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)
+xcopy /Y /D "%KURENAI_BIN%\KurenaiEngineLibrary\*.dll" "$(OutDir)"
+xcopy /Y /D "%KURENAI_BIN%\KurenaiEngineLibrary\*.pdb" "$(OutDir)"
+xcopy /Y /D "%KURENAI_BIN%\KurenaiEngine2D\*.dll" "$(OutDir)"
+xcopy /Y /D "%KURENAI_BIN%\KurenaiEngine2D\*.pdb" "$(OutDir)"
+xcopy /E /I /Y /D "%KURENAI_BIN%\KurenaiEngine2D\Shaders" "$(OutDir)Shaders"
 xcopy /E /I /Y /D "$(ProjectDir)Assets" "$(OutDir)Assets"
 if not exist "$(OutDir)KataGo" mkdir "$(OutDir)KataGo"</Command>
     </PostBuildEvent>
@@ -103,9 +108,12 @@ if not exist "$(OutDir)KataGo" mkdir "$(OutDir)KataGo"</Command>
       <OptimizeReferences>true</OptimizeReferences>
     </Link>
     <PostBuildEvent>
-      <Command>xcopy /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\KurenaiEngine.dll" "$(OutDir)"
-xcopy /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\KurenaiEngine.pdb" "$(OutDir)"
-xcopy /E /I /Y /D "$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)\Shaders" "$(OutDir)Shaders"
+      <Command>set KURENAI_BIN=$(SolutionDir)KurenaiEngine\Build\Bin\$(Platform)\$(Configuration)
+xcopy /Y /D "%KURENAI_BIN%\KurenaiEngineLibrary\*.dll" "$(OutDir)"
+xcopy /Y /D "%KURENAI_BIN%\KurenaiEngineLibrary\*.pdb" "$(OutDir)"
+xcopy /Y /D "%KURENAI_BIN%\KurenaiEngine2D\*.dll" "$(OutDir)"
+xcopy /Y /D "%KURENAI_BIN%\KurenaiEngine2D\*.pdb" "$(OutDir)"
+xcopy /E /I /Y /D "%KURENAI_BIN%\KurenaiEngine2D\Shaders" "$(OutDir)Shaders"
 xcopy /E /I /Y /D "$(ProjectDir)Assets" "$(OutDir)Assets"
 if not exist "$(OutDir)KataGo" mkdir "$(OutDir)KataGo"</Command>
     </PostBuildEvent>
@@ -128,8 +136,11 @@ if not exist "$(OutDir)KataGo" mkdir "$(OutDir)KataGo"</Command>
     <ClInclude Include="Source\MistakeStats.h" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\KurenaiEngine\KurenaiEngine\KurenaiEngine.vcxproj">
-      <Project>{061b33de-deed-4982-af84-5a2469676f24}</Project>
+    <ProjectReference Include="..\KurenaiEngine\KurenaiEngine\KurenaiEngineLibrary.vcxproj">
+      <Project>{7f2c9a41-5b3d-4e68-9a17-0c4e8d2b6f35}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\KurenaiEngine\KurenaiEngine\KurenaiEngine2D.vcxproj">
+      <Project>{4a8e3c57-9f62-41b0-8d2a-5c73e1b94f08}</Project>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
