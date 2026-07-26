@@ -1876,6 +1876,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 board.At(hoverRow, hoverCol) == Stone::Empty;
 
             const bool clicked = renderer.WasMouseButtonPressed(MouseButton::Left);
+            // 1回のクリックが同一フレーム内で複数の判定ブロックにまたがって処理されるのを防ぐ。
+            // 盤中央に配置したボタン群は、クリックで遷移した直後のturnStateに応じて別のボタンが
+            // 同じ座標に現れることがあるため(例: 「カジュアル」ボタンの座標に、遷移直後の
+            // カジュアル強さ選択のグリッドが重なる)、フラグなしだと同一クリックで2段階の選択が
+            // 連続処理されてしまう(強さ選択画面が一瞬で飛ばされる不具合の原因)
+            bool clickConsumed = false;
             bool passPressed = renderer.WasKeyPressed('P');
             bool resignPressed = renderer.WasKeyPressed('R');
             bool reviewStartPressed = renderer.WasKeyPressed('V');
@@ -1984,6 +1990,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     {
                         continue;
                     }
+                    clickConsumed = true;
                     switch (button.Id)
                     {
                     case ButtonId::ChooseBoardSize9:
@@ -2031,8 +2038,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 hasBackButton = true;
                 backButtonRect = LayoutBoardBottomButton(ButtonId::BackToGameMode, layout);
             }
-            if (hasBackButton && mouseInWindow && clicked && IsPointInButton(backButtonRect, mouseWorldX, mouseWorldY))
+            if (hasBackButton && mouseInWindow && clicked && !clickConsumed &&
+                IsPointInButton(backButtonRect, mouseWorldX, mouseWorldY))
             {
+                clickConsumed = true;
                 turnState = (backButtonRect.Id == ButtonId::BackToBoardSize)
                     ? TurnState::ChoosingBoardSize : TurnState::ChoosingGameMode;
             }
@@ -2068,12 +2077,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             };
             const ButtonStyle casualGridStyle{ kCasualGridFontSize, kCasualGridCornerRadius };
 
-            if (mouseInWindow && clicked && turnState == TurnState::ChoosingCasualStrength)
+            if (mouseInWindow && clicked && !clickConsumed && turnState == TurnState::ChoosingCasualStrength)
             {
                 for (const ButtonRect& button : casualTabRects)
                 {
                     if (button.Enabled && IsPointInButton(button, mouseWorldX, mouseWorldY))
                     {
+                        clickConsumed = true;
                         if (button.Id == ButtonId::CasualGroupKyu20To11)      casualStrengthGroup = 0;
                         else if (button.Id == ButtonId::CasualGroupKyu10To1) casualStrengthGroup = 1;
                         else if (button.Id == ButtonId::CasualGroupDan1To9) casualStrengthGroup = 2;
@@ -2085,6 +2095,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     const ButtonRect& button = casualSlotRects[i];
                     if (button.Enabled && IsPointInButton(button, mouseWorldX, mouseWorldY))
                     {
+                        clickConsumed = true;
                         const int rankIndex = RankIndexForCasualSlot(casualStrengthGroup, static_cast<int>(i));
                         beginGameWithTargetRating(RatingForRankIndex(static_cast<double>(rankIndex)));
                         break;
