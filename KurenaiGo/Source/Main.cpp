@@ -1117,6 +1117,38 @@ namespace
         return rects;
     }
 
+    // 盤サイズ選択・対局モード選択のボタン1個分の幅(横一列と違い個数によらず固定幅にする)
+    constexpr float kBoardSelectionButtonWidth = 240.0f;
+
+    // 盤上に浮かぶ少数ボタン(盤サイズ選択・対局モード選択)を、盤中央のX座標(centerX)に
+    // 縦一列・中央揃えで配置する(LayoutBoardCenteredRowの縦版)
+    std::vector<ButtonRect> LayoutBoardCenteredColumn(const std::vector<ButtonSpec>& specs, const BoardLayout& layout,
+        float centerX, float buttonWidth, float buttonHeight)
+    {
+        const size_t count = specs.size();
+        const float totalHeight = count > 0
+            ? static_cast<float>(count) * buttonHeight + static_cast<float>(count - 1) * kCasualTabSpacing
+            : 0.0f;
+
+        std::vector<ButtonRect> rects(count);
+        float centerY = layout.CenterY + totalHeight * 0.5f - buttonHeight * 0.5f;
+
+        for (size_t i = 0; i < count; ++i)
+        {
+            ButtonRect rect;
+            rect.Id = specs[i].Id;
+            rect.Width = buttonWidth;
+            rect.Height = buttonHeight;
+            rect.CenterX = centerX;
+            rect.CenterY = centerY;
+            rect.Enabled = specs[i].Enabled;
+            rect.Active = specs[i].Active;
+            rects[i] = rect;
+            centerY -= (buttonHeight + kCasualTabSpacing);
+        }
+        return rects;
+    }
+
     // 「戻る」ボタン1個分の幅(盤サイズ・対局モード選択の横一列ボタンと違い、常に1個だけなので
     // 盤の格子幅いっぱいに広げず、控えめな固定幅にする)
     constexpr float kBackButtonWidth = 160.0f;
@@ -1915,7 +1947,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 
             const std::vector<ButtonRect> buttonRects = LayoutButtonColumn(buttonSpecs, layout, height);
 
-            // 盤サイズ選択・対局モード選択(対局開始前)。ダイアログではなく、盤中央に横一列で
+            // 盤サイズ選択・対局モード選択(対局開始前)。ダイアログではなく、盤中央に縦一列で
             // 表示する(カジュアル強さ選択のタブ・グリッドと同じ「盤上ボタン」方式に統一するため)
             std::vector<ButtonSpec> boardSizeSpecs;
             std::vector<ButtonSpec> gameModeSpecs;
@@ -1930,10 +1962,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 gameModeSpecs.push_back({ ButtonId::ChooseRanked, L"レート戦", true, false });
                 gameModeSpecs.push_back({ ButtonId::ChooseCasual, L"カジュアル", true, false });
             }
-            const std::vector<ButtonRect> boardSizeRects =
-                LayoutBoardCenteredRow(boardSizeSpecs, layout, layout.CenterY, kCasualTabButtonHeight);
-            const std::vector<ButtonRect> gameModeRects =
-                LayoutBoardCenteredRow(gameModeSpecs, layout, layout.CenterY, kCasualTabButtonHeight);
+            const std::vector<ButtonRect> boardSizeRects = LayoutBoardCenteredColumn(
+                boardSizeSpecs, layout, layout.CenterX, kBoardSelectionButtonWidth, kCasualTabButtonHeight);
+            const std::vector<ButtonRect> gameModeRects = LayoutBoardCenteredColumn(
+                gameModeSpecs, layout, layout.CenterX, kBoardSelectionButtonWidth, kCasualTabButtonHeight);
             const ButtonStyle boardCenteredStyle{
                 kCasualTabFontSize, kCasualTabButtonHeight * 0.5f,
                 kCasualTabColorR, kCasualTabColorG, kCasualTabColorB,
@@ -2517,7 +2549,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 DrawButton(renderer, buttonRects[i], buttonSpecs[i].Label, isButtonHovered, isButtonPressed);
             }
 
-            // 盤サイズ選択・対局モード選択(対局開始前)。盤中央の横一列ボタンを描画する
+            // 盤サイズ選択・対局モード選択(対局開始前)。盤中央の縦一列ボタンを描画する
             for (size_t i = 0; i < boardSizeRects.size(); ++i)
             {
                 const bool isButtonHovered = mouseInWindow && IsPointInButton(boardSizeRects[i], mouseWorldX, mouseWorldY);

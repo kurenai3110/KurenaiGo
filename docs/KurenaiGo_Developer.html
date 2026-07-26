@@ -715,11 +715,14 @@ newUserRating = userRating + K * (actualScore - expected)</code></pre>
 <p>
 その後、盤の大きさ選択(<code>ChooseBoardSize9/13/19</code>)・対局モード選択
 (<code>ChooseRanked</code>/<code>ChooseCasual</code>)のボタンは、画面右側の縦列
-(<code>LayoutButtonColumn</code>)から盤中央の横一列へ移した。カジュアル強さ選択のタブ
+(<code>LayoutButtonColumn</code>)から盤中央へ移した。カジュアル強さ選択のタブ
 (<code>LayoutCasualGroupTabs</code>)がすでに同じ「盤上に浮かぶ横一列ボタン」を実装していたため、
-その配置計算を<code>LayoutBoardCenteredRow</code>として切り出し、盤サイズ・対局モードの2箇所と
-タブ(centerYを盤上部に固定して呼ぶ薄いラッパーに変更)の3箇所で共通化した。これらの選択中は
-右側縦列には<code>終了</code>ボタンのみが残る。
+まずその配置計算を<code>LayoutBoardCenteredRow</code>として切り出し、盤サイズ・対局モードの2箇所と
+タブ(centerYを盤上部に固定して呼ぶ薄いラッパーに変更)の3箇所で共通化した。その後、盤サイズ・
+対局モードの2箇所は視認性のため縦一列表示に変更し、<code>LayoutBoardCenteredColumn</code>
+(固定幅<code>kBoardSelectionButtonWidth</code>、盤中央のX座標基準に上から積む)を新設して
+そちらを使うようにした(タブ側は横一列のまま<code>LayoutBoardCenteredRow</code>を使い続ける)。
+これらの選択中は右側縦列には<code>終了</code>ボタンのみが残る。
 </p>
 <h3>10.2 対局結果文字列からの勝敗判定</h3>
 <p>
