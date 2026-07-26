@@ -157,6 +157,9 @@ namespace
     constexpr float kBlackStoneR = 0.05f, kBlackStoneG = 0.05f, kBlackStoneB = 0.05f;
     constexpr float kWhiteStoneR = 0.95f, kWhiteStoneG = 0.95f, kWhiteStoneB = 0.92f;
 
+    // 直前に着手された石の上に重ねる目印(小さな丸)。石と反対色にして常に視認できるようにする
+    constexpr float kLastMoveMarkerRadiusRatio = 0.32f;
+
     // 勝率バー(黒番から見た勝率で2色に分割する横棒)の見た目
     constexpr float kWinrateBarHeight = 18.0f;
     constexpr float kWinrateBarMargin = 6.0f; // 盤の上端からバーまでの隙間
@@ -379,7 +382,10 @@ namespace
         }
     }
 
-    void DrawStones(KurenaiEngine2D& renderer, const GoBoard& board, const BoardLayout& layout)
+    // lastMoveRow/lastMoveColは直前に着手された石の座標(無ければ-1, -1)。該当する石の上に
+    // 反対色の小さな丸を重ねて描き、盤面を一目見ただけで直前手が分かるようにする
+    void DrawStones(KurenaiEngine2D& renderer, const GoBoard& board, const BoardLayout& layout,
+        int lastMoveRow = -1, int lastMoveCol = -1)
     {
         const int boardSize = board.Size();
         const float stoneRadius = layout.LineSpacing * 0.46f;
@@ -402,6 +408,19 @@ namespace
                 else
                 {
                     renderer.DrawCircle(x, y, stoneRadius, kWhiteStoneR, kWhiteStoneG, kWhiteStoneB, 1.0f);
+                }
+
+                if (row == lastMoveRow && col == lastMoveCol)
+                {
+                    const float markerRadius = stoneRadius * kLastMoveMarkerRadiusRatio;
+                    if (stone == Stone::Black)
+                    {
+                        renderer.DrawCircle(x, y, markerRadius, kWhiteStoneR, kWhiteStoneG, kWhiteStoneB, 1.0f);
+                    }
+                    else
+                    {
+                        renderer.DrawCircle(x, y, markerRadius, kBlackStoneR, kBlackStoneG, kBlackStoneB, 1.0f);
+                    }
                 }
             }
         }
@@ -2737,6 +2756,33 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 
             const GoBoard& displayBoard = (turnState == TurnState::Reviewing) ? reviewBoard : board;
 
+            // 直前に着手された石の座標(パスや着手前なら-1, -1のまま)。棋譜再生中はreviewMoveIndex
+            // 手目まで進めた局面なのでreviewRecord.Moves[reviewMoveIndex - 1]、それ以外は対局の
+            // moveHistoryの末尾を見る
+            int lastMoveRow = -1;
+            int lastMoveCol = -1;
+            if (turnState == TurnState::Reviewing)
+            {
+                if (reviewMoveIndex > 0 && reviewMoveIndex <= static_cast<int>(reviewRecord.Moves.size()))
+                {
+                    const SgfMove& lastMove = reviewRecord.Moves[static_cast<size_t>(reviewMoveIndex - 1)];
+                    if (!lastMove.IsPass)
+                    {
+                        lastMoveRow = lastMove.Row;
+                        lastMoveCol = lastMove.Col;
+                    }
+                }
+            }
+            else if (!moveHistory.empty())
+            {
+                const SgfMove& lastMove = moveHistory.back();
+                if (!lastMove.IsPass)
+                {
+                    lastMoveRow = lastMove.Row;
+                    lastMoveCol = lastMove.Col;
+                }
+            }
+
             // 表示に使う解析結果の決定(通常の対局中は最新解析、棋譜再生中はその手数のキャッシュ)。
             // 地合い可視化・着手ヒント・勝率表示のすべてがこの1つのポインタを共通で使う
             const KataGoAnalysisResult* activeAnalysis = nullptr;
@@ -2769,7 +2815,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 {
                     DrawTerritoryOverlay(renderer, displayBoard, layout, whiteTexture, *activeAnalysis);
                 }
-                DrawStones(renderer, displayBoard, layout);
+                DrawStones(renderer, displayBoard, layout, lastMoveRow, lastMoveCol);
                 if (activeAnalysis && hintOverlayEnabled &&
                     (turnState == TurnState::HumanToMove || turnState == TurnState::Reviewing))
                 {

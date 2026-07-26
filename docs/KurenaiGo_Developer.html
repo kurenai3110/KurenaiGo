@@ -211,11 +211,21 @@ PNGを生成していましたが、<code>DrawCircle</code>の追加に伴い削
 <tr><td>星(hoshi)</td><td>盤の大きさごとの標準的な交点(19路は4隅+辺+天元の9箇所、0-indexedで3,9,15の組み合わせ。
 9路・13路は4隅+天元の5箇所)に<code>DrawCircle</code>で小さな点を描画(<code>HoshiPointsForBoardSize</code>)</td></tr>
 <tr><td>石(黒・白)</td><td><code>GoBoard</code>の石がある交点に<code>DrawCircle</code>で塗り円を描画</td></tr>
+<tr><td>直前手マーカー</td><td>直前に着手された石の中心に、石と反対色・半径<code>stoneRadius * kLastMoveMarkerRadiusRatio</code>の小さな<code>DrawCircle</code>を重ね描画</td></tr>
 </tbody>
 </table>
 <p>
 人間の手番中、カーソルに最も近い空点交点には<code>DrawCircle</code>で半透明のプレビュー円を
 表示します。
+</p>
+<p>
+直前手の座標(<code>lastMoveRow</code>/<code>lastMoveCol</code>)は<code>DrawStones</code>の
+呼び出し側で毎フレーム求めます。棋譜再生中(<code>TurnState::Reviewing</code>)は
+<code>reviewRecord.Moves[reviewMoveIndex - 1]</code>、それ以外の通常対局中は
+<code>moveHistory.back()</code>を参照し、いずれもパス(<code>IsPass == true</code>)なら
+マーカー無し(<code>-1, -1</code>)として扱います。<code>GoBoard</code>自体は着手の履歴を
+保持しない(直前の1手という概念を持たない)ため、この判定はMain.cpp側のSGF記録
+(<code>moveHistory</code>/<code>reviewRecord</code>)に委ねています。
 </p>
 <h3>3.1 効果音</h3>
 <p>
