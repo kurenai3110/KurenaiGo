@@ -1080,28 +1080,25 @@ namespace
         return rects;
     }
 
-    // カジュアル対局の強さ選択(11.6節)の範囲タブ3個を、盤の上部に横一列・中央揃えで配置する
-    // (グリッドとは役割が異なることを示すため、位置も盤上部に離して置く)
+    // 盤上に浮かぶ少数ボタン(盤サイズ選択・対局モード選択・カジュアル強さ選択のタブ等)の
+    // 共通レイアウト。指定したY座標(centerY)に横一列・中央揃えで配置する。
     //
-    // タブの合計横幅(3個分+隙間)が盤の格子の一辺(layout.GridExtent、盤の一番外側の線から
+    // ボタンの合計横幅(count個分+隙間)が盤の格子の一辺(layout.GridExtent、盤の一番外側の線から
     // 線までの幅。盤の大きさによらず常に同じピクセル値)から左右にkCasualOuterMarginずつ
     // 余白を残した幅にちょうど収まるよう、1個あたりの幅を逆算する(ボタンが盤の一番外側の
     // 線の内側に収まるようにするための設計。BoardExtent/GridExtent自体はboardSizeに依存せず
     // 常に同じピクセルサイズで描かれ、変わるのはLineSpacingだけのため、逆にLineSpacingに
     // 比例させて拡大すると9路・13路で盤の外へあふれてしまう。実機検証で確認済み)
-    std::vector<ButtonRect> LayoutCasualGroupTabs(const std::vector<ButtonSpec>& specs, const BoardLayout& layout)
+    std::vector<ButtonRect> LayoutBoardCenteredRow(const std::vector<ButtonSpec>& specs, const BoardLayout& layout,
+        float centerY, float buttonHeight)
     {
         const float availableWidth = layout.GridExtent - kCasualOuterMargin * 2.0f;
         const size_t count = specs.size();
         const float gapTotal = count > 0 ? static_cast<float>(count - 1) * kCasualTabSpacing : 0.0f;
         const float buttonWidth = count > 0 ? (availableWidth - gapTotal) / static_cast<float>(count) : 0.0f;
-        const float buttonHeight = kCasualTabButtonHeight;
 
         std::vector<ButtonRect> rects(count);
         const float originX = layout.CenterX - availableWidth * 0.5f + buttonWidth * 0.5f;
-        // 盤の一番外側の線(CenterY + GridExtent/2)からkCasualOuterMargin分下げた位置に
-        // タブの上端が来るように中心を置く(左右の余白と同じ考え方)
-        const float centerY = layout.CenterY + layout.GridExtent * 0.5f - kCasualOuterMargin - buttonHeight * 0.5f;
 
         for (size_t i = 0; i < count; ++i)
         {
@@ -1116,6 +1113,17 @@ namespace
             rects[i] = rect;
         }
         return rects;
+    }
+
+    // カジュアル対局の強さ選択(11.6節)の範囲タブ3個を、盤の上部に横一列・中央揃えで配置する
+    // (グリッドとは役割が異なることを示すため、位置も盤上部に離して置く)
+    std::vector<ButtonRect> LayoutCasualGroupTabs(const std::vector<ButtonSpec>& specs, const BoardLayout& layout)
+    {
+        const float buttonHeight = kCasualTabButtonHeight;
+        // 盤の一番外側の線(CenterY + GridExtent/2)からkCasualOuterMargin分下げた位置に
+        // タブの上端が来るように中心を置く(左右の余白と同じ考え方)
+        const float centerY = layout.CenterY + layout.GridExtent * 0.5f - kCasualOuterMargin - buttonHeight * 0.5f;
+        return LayoutBoardCenteredRow(specs, layout, centerY, buttonHeight);
     }
 
     // カジュアル対局の強さ選択(11.6節)のランクボタンを、盤中央基準でkCasualGridColumns列の
@@ -1839,20 +1847,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             if (turnState == TurnState::HumanModelMissing)
             {
             }
-            else if (turnState == TurnState::ChoosingBoardSize)
-            {
-                buttonSpecs.push_back({ ButtonId::ChooseBoardSize9, L"9路", true, false });
-                buttonSpecs.push_back({ ButtonId::ChooseBoardSize13, L"13路", true, false });
-                buttonSpecs.push_back({ ButtonId::ChooseBoardSize19, L"19路", true, false });
-            }
-            else if (turnState == TurnState::ChoosingGameMode)
-            {
-                buttonSpecs.push_back({ ButtonId::ChooseRanked, L"レート戦", true, false });
-                buttonSpecs.push_back({ ButtonId::ChooseCasual, L"カジュアル", true, false });
-            }
-            // ChoosingCasualStrengthの間は右側縦列にボタンを出さない(強さ選択は下記の
-            // 盤中央のタブ+グリッドで行う、11.6節参照)。Quitボタンのみ以下で共通追加される
-            else if (turnState == TurnState::ChoosingCasualStrength)
+            // ChoosingBoardSize/ChoosingGameModeの間は右側縦列にボタンを出さない(選択自体は下記の
+            // 盤中央の横一列ボタンで行う)。ChoosingCasualStrengthの間も同様に右側縦列にボタンを出さない
+            // (強さ選択は下記の盤中央のタブ+グリッドで行う、11.6節参照)。Quitボタンのみ以下で共通追加される
+            else if (turnState == TurnState::ChoosingBoardSize || turnState == TurnState::ChoosingGameMode ||
+                turnState == TurnState::ChoosingCasualStrength)
             {
             }
             else if (turnState == TurnState::ViewingMistakeStats)
@@ -1892,6 +1891,76 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             buttonSpecs.push_back({ ButtonId::Quit, L"終了", true, false, ButtonGroup::Bottom });
 
             const std::vector<ButtonRect> buttonRects = LayoutButtonColumn(buttonSpecs, layout, height);
+
+            // 盤サイズ選択・対局モード選択(対局開始前)。ダイアログではなく、盤中央に横一列で
+            // 表示する(カジュアル強さ選択のタブ・グリッドと同じ「盤上ボタン」方式に統一するため)
+            std::vector<ButtonSpec> boardSizeSpecs;
+            std::vector<ButtonSpec> gameModeSpecs;
+            if (turnState == TurnState::ChoosingBoardSize)
+            {
+                boardSizeSpecs.push_back({ ButtonId::ChooseBoardSize9, L"9路", true, false });
+                boardSizeSpecs.push_back({ ButtonId::ChooseBoardSize13, L"13路", true, false });
+                boardSizeSpecs.push_back({ ButtonId::ChooseBoardSize19, L"19路", true, false });
+            }
+            else if (turnState == TurnState::ChoosingGameMode)
+            {
+                gameModeSpecs.push_back({ ButtonId::ChooseRanked, L"レート戦", true, false });
+                gameModeSpecs.push_back({ ButtonId::ChooseCasual, L"カジュアル", true, false });
+            }
+            const std::vector<ButtonRect> boardSizeRects =
+                LayoutBoardCenteredRow(boardSizeSpecs, layout, layout.CenterY, kCasualTabButtonHeight);
+            const std::vector<ButtonRect> gameModeRects =
+                LayoutBoardCenteredRow(gameModeSpecs, layout, layout.CenterY, kCasualTabButtonHeight);
+            const ButtonStyle boardCenteredStyle{
+                kCasualTabFontSize, kCasualTabButtonHeight * 0.5f,
+                kCasualTabColorR, kCasualTabColorG, kCasualTabColorB,
+                kCasualTabHoverColorR, kCasualTabHoverColorG, kCasualTabHoverColorB,
+                kCasualTabBorderColorR, kCasualTabBorderColorG, kCasualTabBorderColorB
+            };
+
+            if (mouseInWindow && clicked &&
+                (turnState == TurnState::ChoosingBoardSize || turnState == TurnState::ChoosingGameMode))
+            {
+                const std::vector<ButtonRect>& rects =
+                    (turnState == TurnState::ChoosingBoardSize) ? boardSizeRects : gameModeRects;
+                for (const ButtonRect& button : rects)
+                {
+                    if (!button.Enabled || !IsPointInButton(button, mouseWorldX, mouseWorldY))
+                    {
+                        continue;
+                    }
+                    switch (button.Id)
+                    {
+                    case ButtonId::ChooseBoardSize9:
+                        currentBoardSize = 9;
+                        board = GoBoard(currentBoardSize);
+                        turnState = TurnState::ChoosingGameMode;
+                        break;
+                    case ButtonId::ChooseBoardSize13:
+                        currentBoardSize = 13;
+                        board = GoBoard(currentBoardSize);
+                        turnState = TurnState::ChoosingGameMode;
+                        break;
+                    case ButtonId::ChooseBoardSize19:
+                        currentBoardSize = 19;
+                        board = GoBoard(currentBoardSize);
+                        turnState = TurnState::ChoosingGameMode;
+                        break;
+                    case ButtonId::ChooseRanked:
+                        currentGameMode = GameMode::Ranked;
+                        beginGameWithTargetRating(CurrentUserRating().Rating);
+                        break;
+                    case ButtonId::ChooseCasual:
+                        currentGameMode = GameMode::Casual;
+                        // 現在のレーティングが属する範囲のタブを既定選択にする(11.6節)
+                        casualStrengthGroup = CasualGroupForRating(CurrentUserRating().Rating);
+                        turnState = TurnState::ChoosingCasualStrength;
+                        break;
+                    default: break;
+                    }
+                    break; // ボタンは重ならない配置のため、1個ヒットしたら以降は調べない
+                }
+            }
 
             // カジュアル対局の強さ選択(11.6節)。盤中央に3個の範囲タブと、現在のタブに応じた
             // 段級位ボタンのグリッド(20〜11級・10〜1級は10個、1〜9段は9個)を表示する
@@ -1967,31 +2036,6 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     case ButtonId::ReviewNext:      reviewNextPressed = true; break;
                     case ButtonId::NewGame:         newGamePressed = true; break;
                     case ButtonId::Quit:            renderer.Close(); break;
-                    case ButtonId::ChooseBoardSize9:
-                        currentBoardSize = 9;
-                        board = GoBoard(currentBoardSize);
-                        turnState = TurnState::ChoosingGameMode;
-                        break;
-                    case ButtonId::ChooseBoardSize13:
-                        currentBoardSize = 13;
-                        board = GoBoard(currentBoardSize);
-                        turnState = TurnState::ChoosingGameMode;
-                        break;
-                    case ButtonId::ChooseBoardSize19:
-                        currentBoardSize = 19;
-                        board = GoBoard(currentBoardSize);
-                        turnState = TurnState::ChoosingGameMode;
-                        break;
-                    case ButtonId::ChooseRanked:
-                        currentGameMode = GameMode::Ranked;
-                        beginGameWithTargetRating(CurrentUserRating().Rating);
-                        break;
-                    case ButtonId::ChooseCasual:
-                        currentGameMode = GameMode::Casual;
-                        // 現在のレーティングが属する範囲のタブを既定選択にする(11.6節)
-                        casualStrengthGroup = CasualGroupForRating(CurrentUserRating().Rating);
-                        turnState = TurnState::ChoosingCasualStrength;
-                        break;
                     case ButtonId::ShowMistakeStats:
                         statsReturnState = turnState;
                         turnState = TurnState::ViewingMistakeStats;
@@ -2428,6 +2472,22 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 const bool isButtonHovered = mouseInWindow && IsPointInButton(buttonRects[i], mouseWorldX, mouseWorldY);
                 const bool isButtonPressed = isButtonHovered && isMouseDown;
                 DrawButton(renderer, buttonRects[i], buttonSpecs[i].Label, isButtonHovered, isButtonPressed);
+            }
+
+            // 盤サイズ選択・対局モード選択(対局開始前)。盤中央の横一列ボタンを描画する
+            for (size_t i = 0; i < boardSizeRects.size(); ++i)
+            {
+                const bool isButtonHovered = mouseInWindow && IsPointInButton(boardSizeRects[i], mouseWorldX, mouseWorldY);
+                const bool isButtonPressed = isButtonHovered && isMouseDown;
+                DrawButton(renderer, boardSizeRects[i], boardSizeSpecs[i].Label, isButtonHovered, isButtonPressed,
+                    boardCenteredStyle);
+            }
+            for (size_t i = 0; i < gameModeRects.size(); ++i)
+            {
+                const bool isButtonHovered = mouseInWindow && IsPointInButton(gameModeRects[i], mouseWorldX, mouseWorldY);
+                const bool isButtonPressed = isButtonHovered && isMouseDown;
+                DrawButton(renderer, gameModeRects[i], gameModeSpecs[i].Label, isButtonHovered, isButtonPressed,
+                    boardCenteredStyle);
             }
 
             // カジュアル対局の強さ選択(11.6節)。盤中央のタブ+グリッドを描画する
