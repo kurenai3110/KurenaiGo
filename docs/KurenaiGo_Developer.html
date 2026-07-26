@@ -144,7 +144,8 @@
     <li><a href="#strength">11. 棋力に応じたAIの強さ設定</a></li>
     <li><a href="#mistakes">12. 苦手分野の解析</a></li>
     <li><a href="#board-message">13. 投了・対局終了等の通知(盤上メッセージ)</a></li>
-    <li><a href="#future">14. 今後の課題</a></li>
+    <li><a href="#turn-color">14. 手番(黒/白)の選択</a></li>
+    <li><a href="#future">15. 今後の課題</a></li>
   </ol>
 </nav>
 
@@ -160,7 +161,7 @@ Protocol)経由の子プロセスとして起動しての対局(人間=黒、Kat
 棋譜(SGF)の自動保存・再生・再生中の解析表示と損失グラフ(9章)、レート戦/カジュアルの
 対局モード分けと棋力の数値化(レーティング、盤の大きさごとに別々に記録、10章)、レーティングに
 応じたAIの強さの自動調整(11章)、レート戦終了時の自動解析による苦手分野の解析(局面ごとの
-悪手率、12章)も実装済みです。色の選択・ハンディキャップは未実装です(14章参照)。
+悪手率、12章)、手番(黒/白)の選択(14章)も実装済みです。ハンディキャップは未実装です(15章参照)。
 </p>
 </section>
 
@@ -308,9 +309,10 @@ falseに戻ってしまう(ホバー判定だけが効かなくなる)ことを�
 <tr><td><code>ChoosingBoardSize</code></td><td>盤の大きさ(9路/13路/19路)のボタン選択待ち。起動直後・新規対局のたびに最初に通る状態(10.5節参照)。最初の選択のため戻る先が無い</td></tr>
 <tr><td><code>ChoosingGameMode</code></td><td>対局モード(レート戦/カジュアル)のボタン選択待ち(10.1節・11.1節参照)。盤下部の「戻る」(<code>ButtonId::BackToBoardSize</code>、<code>LayoutBoardBottomButton</code>)で<code>ChoosingBoardSize</code>へ戻れる</td></tr>
 <tr><td><code>ChoosingCasualStrength</code></td><td>(カジュアル選択時のみ)AIの強さの段階選択待ち(11.1節参照)。盤下部の「戻る」(<code>ButtonId::BackToGameMode</code>、<code>LayoutBoardBottomButton</code>)で<code>ChoosingGameMode</code>へ戻れる</td></tr>
+<tr><td><code>ChoosingCasualColor</code></td><td>(カジュアル選択時のみ、強さ確定後)手番(黒/白/ランダム)の選択待ち(14章参照)。盤下部の「戻る」(<code>ButtonId::BackToCasualStrength</code>)で<code>ChoosingCasualStrength</code>へ戻れる</td></tr>
 <tr><td><code>EngineStarting</code></td><td>KataGo起動中。<code>KataGoClient::IsStartupComplete()</code>をポーリング</td></tr>
-<tr><td><code>HumanToMove</code></td><td>黒(人間)の手番。クリック/<code>P</code>/<code>R</code>を受け付ける</td></tr>
-<tr><td><code>AIThinking</code></td><td>白(KataGo)の<code>genmove</code>応答待ち。<code>TryGetGenMoveResult</code>をポーリング</td></tr>
+<tr><td><code>HumanToMove</code></td><td>人間の手番(色は<code>humanColor</code>、14章参照)。クリック/<code>P</code>/<code>R</code>を受け付ける</td></tr>
+<tr><td><code>AIThinking</code></td><td>KataGo(色は<code>Opponent(humanColor)</code>)の<code>genmove</code>応答待ち。<code>TryGetGenMoveResult</code>をポーリング</td></tr>
 <tr><td><code>WaitingForScore</code></td><td>両者パス後、<code>final_score</code>応答待ち</td></tr>
 <tr><td><code>GameOver</code></td><td>対局終了。<code>V</code>キーで棋譜再生(<code>Reviewing</code>)へ移れる(9.3節参照)。<code>N</code>キーで新規対局(<code>ChoosingBoardSize</code>)へ戻れる(9.6節参照)。レート戦終了直後は自動解析(12章)が終わるまで<code>N</code>/<code>V</code>とも無効</td></tr>
 <tr><td><code>Reviewing</code></td><td>棋譜再生中。<code>→</code>/<code>←</code>キーで手を進め戻しする。<code>N</code>キーで新規対局(<code>ChoosingBoardSize</code>)へ戻れる(9.6節参照)</td></tr>
@@ -625,7 +627,7 @@ SGFの座標は列→行の順でa〜s(0〜18)、行は盤面<strong>上端</str
 (<code>KataGoClient::ToVertex</code>と同じA〜T(<code>I</code>を除く)+行番号の表記)で文中に
 添えます。この閾値はKataGoを使った解析ツールで一般的に用いられる目安を参考にした一例であり、
 手筋の正しさを厳密に判定するものではありません(死活・シチョウ・ヨセ等の詳細な分類は今後の
-課題とし、14章参照)。
+課題とし、15章参照)。
 </p>
 <p>
 言語化には着手<strong>前</strong>の局面の評価・最有力候補手も必要ですが、9.4節の一括解析は
@@ -759,7 +761,7 @@ GameMode::Ranked</code>を<code>overlayTogglesAllowed</code>としてまとめ�
 異なる由来であることが履歴から分かるようにするため)。起動時は全行を読み、パースできた行数を
 対局数、最後の行の値を現在のレーティングとして復元する(<code>LoadRating</code>、ファイル
 不在・全行パース失敗時は初期値にフォールバックし例外は投げない)。今回のパスでは推移の記録の
-みを行い、グラフ等での可視化(9.4節の損失グラフに相当するもの)は未実装(14章参照)。
+みを行い、グラフ等での可視化(9.4節の損失グラフに相当するもの)は未実装(15章参照)。
 </p>
 <h3>10.5 盤の大きさ(9路/13路/19路)ごとの分離</h3>
 <p>
@@ -1167,7 +1169,7 @@ Human SLモデル未配置時のフォールバック経路(19路・カジュア
 <p>
 局面(序盤/中盤/終盤)ごとの悪手率を、レート戦の対局が終了するたびに自動的に集計する。
 KataGoから得られる勝率という事実ベースの情報だけで判定できる範囲に留め、「攻め/受け」
-「死活」等の意味づけ(9.5節の言語化の延長として要望はあるが優先度最低で保留中、14章参照)
+「死活」等の意味づけ(9.5節の言語化の延長として要望はあるが優先度最低で保留中、15章参照)
 には踏み込まない。
 </p>
 <h3>12.1 局面の3分割(序盤/中盤/終盤)</h3>
@@ -1289,8 +1291,48 @@ KataGo通信エラー・KataGo着手反映エラー・終局)のみで、<code>w
 </p>
 </section>
 
+<section id="turn-color">
+<h2>14. 手番(黒/白)の選択</h2>
+<p>
+これまで人間=黒・KataGo=白は<code>Main.cpp</code>全体に直接埋め込まれていた(<code>enterHumanToMove</code>
+での<code>RequestAnalysis(Stone::Black)</code>、着手処理での<code>Stone::Black</code>/
+<code>Stone::White</code>の直書きなど)。手番選択を導入するにあたり、ループのローカル変数
+<code>Stone humanColor</code>(既定値<code>Stone::Black</code>)を追加し、これらの箇所をすべて
+<code>humanColor</code>/<code>Opponent(humanColor)</code>(<code>Opponent</code>はGoBoard.hの
+既存のフリー関数)に置き換えた。<code>enterHumanToMove</code>は<code>RequestAnalysis(humanColor)</code>
+を呼ぶよう変更し、対称性のため<code>enterAIThinking</code>(<code>RequestGenMove(Opponent(humanColor))</code>
+を呼ぶ)を新設して、着手・パスの各経路から呼ぶよう統一した。
+</p>
+<p>
+黒が必ず先手という囲碁のルールは変わらないため、<code>TurnState::EngineStarting</code>完了時の
+分岐を「<code>humanColor == Stone::Black</code>なら<code>enterHumanToMove</code>、そうでなければ
+<code>enterAIThinking</code>」に変更した(人間が白番を選んだ場合、KataGoの着手から対局が始まる)。
+投了による対局結果文字列(SGF/GTP形式、9.1節)も<code>"W+R"</code>/<code>"B+R"</code>の決め打ちを
+やめ、<code>ResignResultString(winner)</code>で実際に勝った色(投了した側の相手)から組み立てる
+よう修正した(人間が白番のときに人間が投了すると、勝者は黒=KataGoになるため<code>"B+R"</code>に
+なる。修正前のままだと常に<code>"W+R"</code>になってしまい、SGFの記録が実際の対局と矛盾していた)。
+</p>
+<p>
+レート戦は常にランダム(<code>RandomHumanColor</code>、<code>std::mt19937</code>を
+<code>std::random_device</code>でシードする50/50の乱数)、カジュアルは黒・白・ランダムから選べる。
+カジュアルの手番選択は、強さ選択(11.6節)の直後に<code>TurnState::ChoosingCasualColor</code>を
+追加する形で実装した。強さ選択のグリッドをクリックした時点ではまだ対局を始めず、目標レーティングを
+<code>pendingCasualTargetRating</code>に保持したまま手番選択へ進み、黒/白/ランダムのいずれかを
+選んだ時点で<code>beginGameWithTargetRating(pendingCasualTargetRating)</code>を呼ぶ。手番選択の
+ボタン(<code>黒</code>/<code>白</code>/<code>ランダム</code>)は、盤サイズ・対局モード選択と
+同じ<code>LayoutBoardCenteredColumn</code>(縦一列)で統一し、「戻る」
+(<code>ButtonId::BackToCasualStrength</code>)で強さ選択へ戻れる。
+</p>
+<p>
+盤下のHUD(<code>BuildStatusText</code>)は、手番中の表示を<code>"あなたの番です(黒)"</code>の
+決め打ちから<code>StoneColorLabel(humanColor)</code>を使う形に変え、あわせて常時表示のトレーラー
+(アゲハマの直後)に<code>"あなたは黒"</code>/<code>"あなたは白"</code>を追加して、ランダムで
+決まった手番でも常に確認できるようにした。
+</p>
+</section>
+
 <section id="future">
-<h2>14. 今後の課題</h2>
+<h2>15. 今後の課題</h2>
 <ul>
 <li>対局中の動的な強さ変更(現状KataGo起動後に強さを変える確立された方法が無いため、
 11章の実装は対局開始時の1回のみとしている)</li>

@@ -1,6 +1,7 @@
 // KurenaiGo - 囲碁アプリ。
 // KurenaiEngine2D(公開API)で19路盤・石を描画し、KataGo(https://github.com/lightvector/katago)を
-// GTP(Go Text Protocol)で動かして人間(黒)とKataGo(白)の対局を行う。
+// GTP(Go Text Protocol)で動かして人間とKataGoの対局を行う。手番(黒/白)はレート戦ではランダム、
+// カジュアルでは黒/白/ランダムから選べる。
 // 座標系はワールド=ピクセル座標(原点は画面左下、Y-up)。
 //
 // 操作: 交点クリックで着手。着手以外の操作(パス・投了・地合い表示切替・着手ヒント表示切替・
@@ -22,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <random>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -63,6 +65,24 @@ namespace
     int ShowMessageBoxUtf8(HWND owner, const std::string& utf8Text, const std::string& utf8Caption, UINT type)
     {
         return MessageBoxW(owner, Utf8ToWide(utf8Text).c_str(), Utf8ToWide(utf8Caption).c_str(), type);
+    }
+
+    // 手番(黒/白)のランダム選択(レート戦・カジュアルの「ランダム」選択、14章参照)用。
+    // プロセス起動のたびにstd::random_deviceで再シードするため、対局のたびに同じ結果には
+    // 偏らない
+    Stone RandomHumanColor()
+    {
+        static std::mt19937 engine(std::random_device{}());
+        std::uniform_int_distribution<int> distribution(0, 1);
+        return distribution(engine) == 0 ? Stone::Black : Stone::White;
+    }
+
+    // 投了による対局結果文字列(SGF/GTP形式、9.1節。例: "B+R")を勝者の色から組み立てる。
+    // 人間がどちらの色でも、実際に盤上で勝った色を反映する必要があるため、手番選択(14章)の
+    // 導入に伴いhumanColor/Opponent(humanColor)から都度求める
+    std::string ResignResultString(Stone winner)
+    {
+        return (winner == Stone::Black ? "B" : "W") + std::string("+R");
     }
 
     // 対局開始前(ChoosingBoardSize)の既定の盤の目の数(9路/13路/19路から選び直せる)
@@ -649,9 +669,10 @@ namespace
         ChoosingBoardSize,      // 盤の大きさ(9路/13路/19路)のボタン選択待ち(対局開始前、最初の選択)
         ChoosingGameMode,       // レート戦/カジュアルのボタン選択待ち(対局開始前)
         ChoosingCasualStrength, // (カジュアル選択時のみ)AIの強さの段階選択待ち
-        EngineStarting, // KataGo起動中(強さ確定後に起動するため、対局開始のたびに発生する)
-        HumanToMove,     // 黒(人間)の手番
-        AIThinking,      // 白(KataGo)がgenmove応答待ち
+        ChoosingCasualColor,    // (カジュアル選択時のみ、強さ確定後)手番(黒/白/ランダム)の選択待ち
+        EngineStarting, // KataGo起動中(強さ・手番確定後に起動するため、対局開始のたびに発生する)
+        HumanToMove,     // 人間の手番(手番の色はhumanColor参照)
+        AIThinking,      // KataGoがgenmove応答待ち(手番の色はOpponent(humanColor))
         WaitingForScore, // 両者パス後、final_score応答待ち
         GameOver,        // 対局終了。Vキーで直前の対局の棋譜再生(Reviewing)へ移れる
         Reviewing,       // 棋譜再生中。矢印キーで手を進め戻しする
@@ -767,7 +788,7 @@ namespace
     constexpr bool kPlacementModeEnabled = false;
 
     // 初期レーティング決定(プレースメント)モード: 対局回数0のままレート戦を始めた場合のみ
-    // 発動する。黒(人間)の手番ごとに得られるkata-analyzeの勝率(WinrateForColorToMove)を
+    // 発動する。人間の手番ごとに得られるkata-analyzeの勝率(WinrateForColorToMove)を
     // Eloの期待勝率式の逆算(InvertEloForRating)に通し、「この勝率を出す人間側のレーティングは
     // いくつか」を指数移動平均で追跡する。ConvergenceRate()(0.0〜1.0)がkConvergenceRateThreshold
     // (80%)を超えたら「ある程度収束した」とみなし、対局の結果を待たずにその時点で
@@ -871,16 +892,23 @@ namespace
         }
     };
 
+    // 石の色を表示用の日本語("黒"/"白")にする
+    std::wstring StoneColorLabel(Stone color)
+    {
+        return color == Stone::Black ? L"黒" : L"白";
+    }
+
     // 盤下のHUDに表示する手番状態・アゲハマ数のテキストを組み立てる。reviewMoveIndex/
     // reviewTotalMoves/reviewResultはturnState==Reviewingの場合のみ使う。aiTargetRatingは
-    // 今回の対局でAIが狙っている強さ(目安レーティング)。isPlacementActiveがtrueの間は
+    // 今回の対局でAIが狙っている強さ(目安レーティング)。humanColorは今回の対局で人間が
+    // 持つ色(14章参照)。isPlacementActiveがtrueの間は
     // userRatingの代わりにplacementEstimateを「測定中」の値として、あわせて
     // placementConvergenceRate(0.0〜1.0、PlacementTracker::ConvergenceRate参照)を
     // 収束率(%)として表示する。
     // postGameAnalysisActiveの間はGameOverの表示に解析の進捗を追記する(11章参照)
     std::wstring BuildStatusText(TurnState turnState, const GoBoard& board,
         int reviewMoveIndex, int reviewTotalMoves, const std::string& reviewResult,
-        double userRating, GameMode gameMode, double aiTargetRating,
+        double userRating, GameMode gameMode, double aiTargetRating, Stone humanColor,
         bool isPlacementActive, double placementEstimate, double placementConvergenceRate,
         bool postGameAnalysisActive, int postGameAnalysisIndex, int postGameAnalysisTotalMoves)
     {
@@ -895,20 +923,24 @@ namespace
         }
         if (turnState == TurnState::ChoosingGameMode)
         {
-            return L"対局モードを選んでください(レート戦: 今のレーティングと互角のAIと対局/"
-                L"カジュアル: 強さを自分で選べます)";
+            return L"対局モードを選んでください(レート戦: 今のレーティングと互角のAIと対局・手番はランダム/"
+                L"カジュアル: 強さ・手番を自分で選べます)";
         }
         if (turnState == TurnState::ChoosingCasualStrength)
         {
             return L"カジュアル対局の強さを選んでください"
                 L"(上のタブで級/段の範囲を切り替え、グリッドから具体的な強さを選べます)";
         }
+        if (turnState == TurnState::ChoosingCasualColor)
+        {
+            return L"手番を選んでください(黒/白/ランダム)";
+        }
 
         std::wstring text;
         switch (turnState)
         {
         case TurnState::EngineStarting:  text = L"KataGo起動中..."; break;
-        case TurnState::HumanToMove:     text = L"あなたの番です(黒)"; break;
+        case TurnState::HumanToMove:     text = L"あなたの番です(" + StoneColorLabel(humanColor) + L")"; break;
         case TurnState::AIThinking:      text = L"KataGo思考中..."; break;
         case TurnState::WaitingForScore: text = L"終局判定中..."; break;
         case TurnState::GameOver:
@@ -931,6 +963,7 @@ namespace
         }
         text += L"   アゲハマ 黒:" + std::to_wstring(board.CapturesBy(Stone::Black)) +
             L" 白:" + std::to_wstring(board.CapturesBy(Stone::White));
+        text += L"   あなたは" + StoneColorLabel(humanColor);
         if (isPlacementActive)
         {
             text += L"   レーティング測定中(推定:" + std::to_wstring(std::lround(placementEstimate)) +
@@ -950,7 +983,7 @@ namespace
     // 盤の下マージンにHUDテキストを描画する
     void DrawHud(KurenaiEngine2D& renderer, const BoardLayout& layout, TurnState turnState, const GoBoard& board,
         int reviewMoveIndex, int reviewTotalMoves, const std::string& reviewResult,
-        double userRating, GameMode gameMode, double aiTargetRating,
+        double userRating, GameMode gameMode, double aiTargetRating, Stone humanColor,
         bool isPlacementActive, double placementEstimate, double placementConvergenceRate,
         bool postGameAnalysisActive, int postGameAnalysisIndex, int postGameAnalysisTotalMoves)
     {
@@ -959,7 +992,7 @@ namespace
         const float hudY = bottomMarginCenterY - kHudFontSize * 0.5f;
         renderer.DrawText(hudX, hudY,
             BuildStatusText(turnState, board, reviewMoveIndex, reviewTotalMoves, reviewResult,
-                userRating, gameMode, aiTargetRating, isPlacementActive, placementEstimate, placementConvergenceRate,
+                userRating, gameMode, aiTargetRating, humanColor, isPlacementActive, placementEstimate, placementConvergenceRate,
                 postGameAnalysisActive, postGameAnalysisIndex, postGameAnalysisTotalMoves),
             kHudFontSize, kHudColorR, kHudColorG, kHudColorB, 1.0f,
             false, TextAlign::Left, TextVerticalAlign::Bottom);
@@ -1003,7 +1036,11 @@ namespace
         BackFromStats,
         BackToBoardSize, // ChoosingGameMode→ChoosingBoardSizeへ戻る
         BackToGameMode,  // ChoosingCasualStrength→ChoosingGameModeへ戻る
+        BackToCasualStrength, // ChoosingCasualColor→ChoosingCasualStrengthへ戻る
         DismissMessage,  // 盤上メッセージ(BoardMessageState)のOKボタン
+        ChooseColorBlack,  // カジュアル手番選択: 黒
+        ChooseColorWhite,  // カジュアル手番選択: 白
+        ChooseColorRandom, // カジュアル手番選択: ランダム
     };
 
     // ボタン列(画面右側の縦列)内での配置グループ。対局状態(turnState)によって中央グループの
@@ -1762,9 +1799,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         };
 
         GameMode currentGameMode = GameMode::Casual;
+        // 今回の対局で人間が持つ色。レート戦は常にランダム、カジュアルは黒/白/ランダムから
+        // ChoosingCasualColorで選ぶ(14章参照)。対局中は変えない
+        Stone humanColor = Stone::Black;
         // カジュアル対局の強さ選択(11.6節)で現在表示中のタブ(0=20〜11級/1=10〜1級/2=1〜9段)。
         // ChoosingCasualStrengthに入るたびに現在のレーティングに応じた既定タブへ設定し直す
         int casualStrengthGroup = 0;
+        // カジュアル対局で強さ選択(ChoosingCasualStrength)直後に決まる目安レーティング。
+        // 続く手番選択(ChoosingCasualColor)で色が決まるまで保持し、決まった時点で
+        // beginGameWithTargetRatingへ渡す
+        double pendingCasualTargetRating = kInitialRating;
         // 今回の対局でAIが狙っている強さ(目安レーティング)。レート戦なら常にuserRating.Rating
         // (五分の相手)、カジュアルなら段階選択で選んだ値
         double currentAiTargetRating = kInitialRating;
@@ -1853,13 +1897,20 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         // この手番でサンプル済みかどうかをここで別途追跡する(enterHumanToMoveでfalseに戻す)
         bool placementSampledForCurrentTurn = false;
 
-        // HumanToMoveへ遷移すると同時に、その局面の解析(黒=人間視点)を要求する
+        // HumanToMoveへ遷移すると同時に、その局面の解析(humanColor視点)を要求する
         const auto enterHumanToMove = [&]()
         {
             turnState = TurnState::HumanToMove;
             hasAnalysis = false;
             placementSampledForCurrentTurn = false;
-            kataGo.RequestAnalysis(Stone::Black);
+            kataGo.RequestAnalysis(humanColor);
+        };
+
+        // AIThinkingへ遷移すると同時に、AI(Opponent(humanColor))のgenmoveを要求する
+        const auto enterAIThinking = [&]()
+        {
+            turnState = TurnState::AIThinking;
+            kataGo.RequestGenMove(Opponent(humanColor));
         };
 
         // moves(SgfMove)をKataGoPlayedMoveへ詰め替える(Sgf.hがKataGoClient.hをincludeしている
@@ -2068,7 +2119,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             // 選択へ戻る「戻る」ボタンも盤下部に表示するため、右側縦列には出さない)。
             // Quitボタンのみ以下で共通追加される
             else if (turnState == TurnState::ChoosingBoardSize || turnState == TurnState::ChoosingGameMode ||
-                turnState == TurnState::ChoosingCasualStrength)
+                turnState == TurnState::ChoosingCasualStrength || turnState == TurnState::ChoosingCasualColor)
             {
             }
             else if (turnState == TurnState::ViewingMistakeStats)
@@ -2170,6 +2221,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         // ONにしたままの状態が持ち越されないようここでリセットする
                         territoryOverlayEnabled = false;
                         hintOverlayEnabled = false;
+                        // レート戦の手番は常にランダム(14章参照)
+                        humanColor = RandomHumanColor();
                         beginGameWithTargetRating(CurrentUserRating().Rating);
                         break;
                     case ButtonId::ChooseCasual:
@@ -2185,7 +2238,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             }
 
             // 「戻る」ボタン(ChoosingGameMode→ChoosingBoardSize、ChoosingCasualStrength→
-            // ChoosingGameMode)。盤下部に単発で表示する(ChoosingBoardSizeは最初の選択のため無し)
+            // ChoosingGameMode、ChoosingCasualColor→ChoosingCasualStrength)。盤下部に単発で
+            // 表示する(ChoosingBoardSizeは最初の選択のため無し)
             bool hasBackButton = false;
             ButtonRect backButtonRect{};
             if (turnState == TurnState::ChoosingGameMode)
@@ -2198,12 +2252,22 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 hasBackButton = true;
                 backButtonRect = LayoutBoardBottomButton(ButtonId::BackToGameMode, layout);
             }
+            else if (turnState == TurnState::ChoosingCasualColor)
+            {
+                hasBackButton = true;
+                backButtonRect = LayoutBoardBottomButton(ButtonId::BackToCasualStrength, layout);
+            }
             if (hasBackButton && mouseInWindow && clicked && !clickConsumed &&
                 IsPointInButton(backButtonRect, mouseWorldX, mouseWorldY))
             {
                 clickConsumed = true;
-                turnState = (backButtonRect.Id == ButtonId::BackToBoardSize)
-                    ? TurnState::ChoosingBoardSize : TurnState::ChoosingGameMode;
+                switch (backButtonRect.Id)
+                {
+                case ButtonId::BackToBoardSize:      turnState = TurnState::ChoosingBoardSize; break;
+                case ButtonId::BackToGameMode:        turnState = TurnState::ChoosingGameMode; break;
+                case ButtonId::BackToCasualStrength:  turnState = TurnState::ChoosingCasualStrength; break;
+                default: break;
+                }
             }
 
             // カジュアル対局の強さ選択(11.6節)。盤中央に3個の範囲タブと、現在のタブに応じた
@@ -2257,9 +2321,45 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     {
                         clickConsumed = true;
                         const int rankIndex = RankIndexForCasualSlot(casualStrengthGroup, static_cast<int>(i));
-                        beginGameWithTargetRating(RatingForRankIndex(static_cast<double>(rankIndex)));
+                        // 強さが決まった時点ではまだ対局を始めず、続けて手番(黒/白/ランダム)を
+                        // 選んでもらう(14章参照)。目標レーティングは色が決まるまで保持しておく
+                        pendingCasualTargetRating = RatingForRankIndex(static_cast<double>(rankIndex));
+                        turnState = TurnState::ChoosingCasualColor;
                         break;
                     }
+                }
+            }
+
+            // カジュアル対局の手番選択(14章)。強さ選択の直後に、盤中央へ縦一列で表示する
+            // (盤サイズ・対局モード選択と同じLayoutBoardCenteredColumnを使い見た目を統一する)
+            std::vector<ButtonSpec> casualColorSpecs;
+            if (turnState == TurnState::ChoosingCasualColor)
+            {
+                casualColorSpecs.push_back({ ButtonId::ChooseColorBlack, L"黒", true, false });
+                casualColorSpecs.push_back({ ButtonId::ChooseColorWhite, L"白", true, false });
+                casualColorSpecs.push_back({ ButtonId::ChooseColorRandom, L"ランダム", true, false });
+            }
+            const std::vector<ButtonRect> casualColorRects = LayoutBoardCenteredColumn(
+                casualColorSpecs, layout, layout.CenterX, kBoardSelectionButtonWidth, kCasualTabButtonHeight);
+
+            if (mouseInWindow && clicked && !clickConsumed && turnState == TurnState::ChoosingCasualColor)
+            {
+                for (const ButtonRect& button : casualColorRects)
+                {
+                    if (!button.Enabled || !IsPointInButton(button, mouseWorldX, mouseWorldY))
+                    {
+                        continue;
+                    }
+                    clickConsumed = true;
+                    switch (button.Id)
+                    {
+                    case ButtonId::ChooseColorBlack:  humanColor = Stone::Black; break;
+                    case ButtonId::ChooseColorWhite:  humanColor = Stone::White; break;
+                    case ButtonId::ChooseColorRandom: humanColor = RandomHumanColor(); break;
+                    default: break;
+                    }
+                    beginGameWithTargetRating(pendingCasualTargetRating);
+                    break; // ボタンは重ならない配置のため、1個ヒットしたら以降は調べない
                 }
             }
 
@@ -2301,12 +2401,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 latestAnalysis = polledAnalysis;
                 hasAnalysis = !latestAnalysis.Failed;
 
-                // 初期レーティング決定(プレースメント)モード中は、黒(人間)の手番ごとの
+                // 初期レーティング決定(プレースメント)モード中は、人間の手番ごとの
                 // 勝率を追跡する(10.4節参照)。TryGetAnalysisResultは同じ結果を読み出す
                 // たびtrueを返し続けるため、この手番でまだサンプリングしていない場合のみ
                 // 実行する。ある程度収束したと判定されたら、対局の自然な終了を待たず
                 // その場でレーティングを確定し対局を終了する(この時点でturnStateは
-                // 必ずHumanToMove。RequestAnalysis(Stone::Black)はenterHumanToMoveでのみ
+                // 必ずHumanToMove。RequestAnalysis(humanColor)はenterHumanToMoveでのみ
                 // 呼んでいるため)
                 if (hasAnalysis && placementTracker.Active && !placementSampledForCurrentTurn)
                 {
@@ -2427,7 +2527,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     {
                         throw std::runtime_error("KataGoの起動に失敗しました: " + kataGo.LastError());
                     }
-                    enterHumanToMove();
+                    // 黒が必ず先手のため、人間が黒番ならHumanToMove、白番ならAI(黒番)から始める
+                    if (humanColor == Stone::Black)
+                    {
+                        enterHumanToMove();
+                    }
+                    else
+                    {
+                        enterAIThinking();
+                    }
                 }
                 break;
 
@@ -2435,7 +2543,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 if (resignPressed)
                 {
                     renderer.PlaySound(gameEndSound);
-                    lastSavedGamePath = FinalizeGameResult(gamesDir, CurrentRatingPath(), moveHistory, "W+R", currentGameMode, currentAiTargetRating, isCurrentGamePlacement, CurrentUserRating(), currentBoardSize);
+                    const std::string result = ResignResultString(Opponent(humanColor));
+                    lastSavedGamePath = FinalizeGameResult(gamesDir, CurrentRatingPath(), moveHistory, result, currentGameMode, currentAiTargetRating, isCurrentGamePlacement, CurrentUserRating(), currentBoardSize);
                     if (currentGameMode == GameMode::Ranked)
                     {
                         beginPostGameAnalysis(lastSavedGamePath);
@@ -2446,8 +2555,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 else if (passPressed)
                 {
                     board.Pass();
-                    kataGo.PlayPass(Stone::Black);
-                    moveHistory.push_back({ Stone::Black, true, -1, -1 });
+                    kataGo.PlayPass(humanColor);
+                    moveHistory.push_back({ humanColor, true, -1, -1 });
                     if (board.ConsecutivePasses() >= 2)
                     {
                         kataGo.RequestFinalScore();
@@ -2455,19 +2564,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     }
                     else
                     {
-                        kataGo.RequestGenMove(Stone::White);
-                        turnState = TurnState::AIThinking;
+                        enterAIThinking();
                     }
                 }
                 else if (clicked && isHovering)
                 {
-                    if (board.TryPlay(hoverRow, hoverCol, Stone::Black))
+                    if (board.TryPlay(hoverRow, hoverCol, humanColor))
                     {
                         renderer.PlaySound(stonePlaceSound);
-                        kataGo.PlayMove(Stone::Black, hoverRow, hoverCol);
-                        moveHistory.push_back({ Stone::Black, false, hoverRow, hoverCol });
-                        kataGo.RequestGenMove(Stone::White);
-                        turnState = TurnState::AIThinking;
+                        kataGo.PlayMove(humanColor, hoverRow, hoverCol);
+                        moveHistory.push_back({ humanColor, false, hoverRow, hoverCol });
+                        enterAIThinking();
                     }
                     // 非合法手(コウ等)の場合は無視して手番を継続する
                 }
@@ -2478,6 +2585,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 KataGoMoveResult result;
                 if (kataGo.TryGetGenMoveResult(result))
                 {
+                    const Stone aiColor = Opponent(humanColor);
                     if (result.Failed)
                     {
                         const std::string message = "KataGoとの通信でエラーが発生しました:\n" + kataGo.LastError();
@@ -2487,7 +2595,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     else if (result.IsResign)
                     {
                         renderer.PlaySound(gameEndSound);
-                        lastSavedGamePath = FinalizeGameResult(gamesDir, CurrentRatingPath(), moveHistory, "B+R", currentGameMode, currentAiTargetRating, isCurrentGamePlacement, CurrentUserRating(), currentBoardSize);
+                        const std::string sgfResult = ResignResultString(humanColor);
+                        lastSavedGamePath = FinalizeGameResult(gamesDir, CurrentRatingPath(), moveHistory, sgfResult, currentGameMode, currentAiTargetRating, isCurrentGamePlacement, CurrentUserRating(), currentBoardSize);
                         if (currentGameMode == GameMode::Ranked)
                         {
                             beginPostGameAnalysis(lastSavedGamePath);
@@ -2498,7 +2607,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     else if (result.IsPass)
                     {
                         board.Pass();
-                        moveHistory.push_back({ Stone::White, true, -1, -1 });
+                        moveHistory.push_back({ aiColor, true, -1, -1 });
                         if (board.ConsecutivePasses() >= 2)
                         {
                             kataGo.RequestFinalScore();
@@ -2509,7 +2618,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                             enterHumanToMove();
                         }
                     }
-                    else if (!board.TryPlay(result.Row, result.Col, Stone::White))
+                    else if (!board.TryPlay(result.Row, result.Col, aiColor))
                     {
                         // KataGoは常に合法手を返す前提のため、ここに来るのは想定外の異常事態
                         showBoardMessage("KataGoの着手を反映できませんでした(想定外の座標)。", "エラー", true);
@@ -2518,7 +2627,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     else
                     {
                         renderer.PlaySound(stonePlaceSound);
-                        moveHistory.push_back({ Stone::White, false, result.Row, result.Col });
+                        moveHistory.push_back({ aiColor, false, result.Row, result.Col });
                         enterHumanToMove();
                     }
                 }
@@ -2693,7 +2802,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 }
                 DrawHud(renderer, layout, turnState, displayBoard,
                     reviewMoveIndex, static_cast<int>(reviewRecord.Moves.size()), reviewRecord.Result,
-                    CurrentUserRating().Rating, currentGameMode, currentAiTargetRating,
+                    CurrentUserRating().Rating, currentGameMode, currentAiTargetRating, humanColor,
                     placementTracker.Active, placementTracker.CurrentEstimate(), placementTracker.ConvergenceRate(),
                     postGameAnalysisActive, postGameAnalysisCompletedCount,
                     static_cast<int>(postGameAnalysisMoves.size()));
@@ -2754,6 +2863,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 const bool isButtonPressed = isButtonHovered && isMouseDown;
                 DrawButton(renderer, casualSlotRects[i], casualSlotSpecs[i].Label, isButtonHovered, isButtonPressed,
                     casualGridStyle);
+            }
+
+            // カジュアル対局の手番選択(14章)。盤中央の縦一列ボタンを描画する
+            for (size_t i = 0; i < casualColorRects.size(); ++i)
+            {
+                const bool isButtonHovered = mouseInWindow && IsPointInButton(casualColorRects[i], mouseWorldX, mouseWorldY);
+                const bool isButtonPressed = isButtonHovered && isMouseDown;
+                DrawButton(renderer, casualColorRects[i], casualColorSpecs[i].Label, isButtonHovered, isButtonPressed,
+                    boardCenteredStyle);
             }
 
             // 手番中、カーソルが空点の交点上にあれば半透明のプレビューを表示する
