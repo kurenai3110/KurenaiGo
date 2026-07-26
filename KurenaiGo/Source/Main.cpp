@@ -2026,12 +2026,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 newGamePressed = false;
             }
 
-            if (renderer.WasKeyPressed('T') && !boardMessage.Active)
+            // 地合い表示・着手ヒントはレート戦では使えない(互角の相手と正味の実力で対局する
+            // という趣旨に反するため)。カジュアルでのみキー操作・ボタンの両方を受け付ける
+            const bool overlayTogglesAllowed = currentGameMode != GameMode::Ranked;
+
+            if (renderer.WasKeyPressed('T') && !boardMessage.Active && overlayTogglesAllowed)
             {
                 territoryOverlayEnabled = !territoryOverlayEnabled;
             }
 
-            if (renderer.WasKeyPressed('H') && !boardMessage.Active)
+            if (renderer.WasKeyPressed('H') && !boardMessage.Active && overlayTogglesAllowed)
             {
                 hintOverlayEnabled = !hintOverlayEnabled;
             }
@@ -2073,8 +2077,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             }
             else
             {
-                buttonSpecs.push_back({ ButtonId::ToggleTerritory, L"地合い表示", true, territoryOverlayEnabled, ButtonGroup::Top });
-                buttonSpecs.push_back({ ButtonId::ToggleHint, L"着手ヒント", true, hintOverlayEnabled, ButtonGroup::Top });
+                buttonSpecs.push_back({ ButtonId::ToggleTerritory, L"地合い表示", overlayTogglesAllowed, territoryOverlayEnabled, ButtonGroup::Top });
+                buttonSpecs.push_back({ ButtonId::ToggleHint, L"着手ヒント", overlayTogglesAllowed, hintOverlayEnabled, ButtonGroup::Top });
                 if (turnState == TurnState::HumanToMove)
                 {
                     buttonSpecs.push_back({ ButtonId::Pass, L"パス", true, false });
@@ -2162,6 +2166,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         break;
                     case ButtonId::ChooseRanked:
                         currentGameMode = GameMode::Ranked;
+                        // レート戦では地合い表示・着手ヒントが使えないため、前回カジュアルで
+                        // ONにしたままの状態が持ち越されないようここでリセットする
+                        territoryOverlayEnabled = false;
+                        hintOverlayEnabled = false;
                         beginGameWithTargetRating(CurrentUserRating().Rating);
                         break;
                     case ButtonId::ChooseCasual:

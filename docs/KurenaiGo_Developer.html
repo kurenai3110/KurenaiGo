@@ -727,6 +727,16 @@ newUserRating = userRating + K * (actualScore - expected)</code></pre>
 そちらを使うようにした(タブ側は横一列のまま<code>LayoutBoardCenteredRow</code>を使い続ける)。
 これらの選択中は右側縦列には<code>終了</code>ボタンのみが残る。
 </p>
+<p>
+レート戦は「今のレーティングと互角のAIに、補助情報無しの正味の実力で対局する」という趣旨のため、
+地合い表示・着手ヒント(8章)はカジュアルでのみ使える。<code>currentGameMode !=
+GameMode::Ranked</code>を<code>overlayTogglesAllowed</code>としてまとめ、(1)<code>ButtonSpec</code>の
+<code>Enabled</code>(ボタンを灰色にする)、(2)<code>T</code>/<code>H</code>キー押下の判定、
+両方をこのフラグでゲートする。あわせて、前回カジュアルで地合い表示・着手ヒントをONにしたままの
+状態が次のレート戦へ持ち越されないよう、<code>ChooseRanked</code>のクリック処理で
+<code>territoryOverlayEnabled</code>/<code>hintOverlayEnabled</code>を明示的に<code>false</code>へ
+リセットする(ボタン無効化だけでは、既にONだった状態のオーバーレイ自体は消えないため)。
+</p>
 <h3>10.2 対局結果文字列からの勝敗判定</h3>
 <p>
 対局終了時の結果文字列(<code>"W+R"</code>=人間の投了、<code>"B+R"</code>=KataGoの投了、

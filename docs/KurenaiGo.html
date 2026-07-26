@@ -231,8 +231,8 @@ KurenaiGoを遊ぶには、KataGo本体・ニューラルネットワーク・�
 <tr><td>着手</td><td>(盤の交点をマウスでクリック)</td><td>-</td></tr>
 <tr><td>パス</td><td><code>パス</code>(対局中のみ表示)</td><td><code>P</code></td></tr>
 <tr><td>投了</td><td><code>投了</code>(対局中のみ表示)</td><td><code>R</code></td></tr>
-<tr><td>地合い表示の切替</td><td><code>地合い表示</code></td><td><code>T</code></td></tr>
-<tr><td>着手ヒント表示の切替</td><td><code>着手ヒント</code></td><td><code>H</code></td></tr>
+<tr><td>地合い表示の切替(カジュアルのみ)</td><td><code>地合い表示</code></td><td><code>T</code></td></tr>
+<tr><td>着手ヒント表示の切替(カジュアルのみ)</td><td><code>着手ヒント</code></td><td><code>H</code></td></tr>
 <tr><td>棋譜再生を開始(対局終了後)</td><td><code>棋譜再生</code>(対局終了後のみ表示)</td><td><code>V</code></td></tr>
 <tr><td>棋譜再生中に1手進める・戻す</td><td><code>次の手</code> / <code>前の手</code>(再生中のみ表示)</td><td><code>→</code> / <code>←</code></td></tr>
 <tr><td>新規対局を開始(対局終了後・棋譜再生中)</td><td><code>新規対局</code>(対局終了後・棋譜再生中のみ表示)</td><td><code>N</code></td></tr>
@@ -271,6 +271,11 @@ KurenaiGoを遊ぶには、KataGo本体・ニューラルネットワーク・�
 対局の進行に必須ではない補助情報のため、何らかの理由で失敗しても対局そのものは中断されません。
 どちらの表示切替も棋譜再生中は各手数の解析結果に連動し、地合い表示は着手ヒントと同様その時点の
 局面に応じて切り替わります。
+</p>
+<p>
+<strong>地合い表示・着手ヒントは、レート戦では使えません</strong>(ボタンが灰色になり、
+<code>T</code>/<code>H</code>キーも反応しません)。今のレーティングと互角のAIに、補助情報無しの
+正味の実力で対局するという趣旨のため、これらの表示切替はカジュアル対局中のみ使えます。
 </p>
 </section>
 
