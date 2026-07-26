@@ -1,5 +1,5 @@
 # ビルド生成物
-/Build/
+Build/
 
 # Visual Studio
 .vs/
@@ -25,4 +25,4 @@
 /Claude/
 
 # KataGo本体・ニューラルネットはBuild\Bin\<Platform>\<Config>\KataGo\に配置する
-# (容量が大きいためGit管理対象外。READMEの手順で別途取得する)。/Build/で既に除外済み
+# (容量が大きいためGit管理対象外。READMEの手順で別途取得する)。Build/で既に除外済み
