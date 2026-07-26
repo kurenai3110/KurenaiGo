@@ -304,9 +304,9 @@ falseに戻ってしまう(ホバー判定だけが効かなくなる)ことを�
 <table>
 <thead><tr><th>状態</th><th>内容</th></tr></thead>
 <tbody>
-<tr><td><code>ChoosingBoardSize</code></td><td>盤の大きさ(9路/13路/19路)のボタン選択待ち。起動直後・新規対局のたびに最初に通る状態(10.5節参照)</td></tr>
-<tr><td><code>ChoosingGameMode</code></td><td>対局モード(レート戦/カジュアル)のボタン選択待ち(10.1節・11.1節参照)</td></tr>
-<tr><td><code>ChoosingCasualStrength</code></td><td>(カジュアル選択時のみ)AIの強さの段階選択待ち(11.1節参照)</td></tr>
+<tr><td><code>ChoosingBoardSize</code></td><td>盤の大きさ(9路/13路/19路)のボタン選択待ち。起動直後・新規対局のたびに最初に通る状態(10.5節参照)。最初の選択のため戻る先が無い</td></tr>
+<tr><td><code>ChoosingGameMode</code></td><td>対局モード(レート戦/カジュアル)のボタン選択待ち(10.1節・11.1節参照)。盤下部の「戻る」(<code>ButtonId::BackToBoardSize</code>、<code>LayoutBoardBottomButton</code>)で<code>ChoosingBoardSize</code>へ戻れる</td></tr>
+<tr><td><code>ChoosingCasualStrength</code></td><td>(カジュアル選択時のみ)AIの強さの段階選択待ち(11.1節参照)。盤下部の「戻る」(<code>ButtonId::BackToGameMode</code>、<code>LayoutBoardBottomButton</code>)で<code>ChoosingGameMode</code>へ戻れる</td></tr>
 <tr><td><code>EngineStarting</code></td><td>KataGo起動中。<code>KataGoClient::IsStartupComplete()</code>をポーリング</td></tr>
 <tr><td><code>HumanToMove</code></td><td>黒(人間)の手番。クリック/<code>P</code>/<code>R</code>を受け付ける</td></tr>
 <tr><td><code>AIThinking</code></td><td>白(KataGo)の<code>genmove</code>応答待ち。<code>TryGetGenMoveResult</code>をポーリング</td></tr>

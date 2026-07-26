@@ -975,6 +975,8 @@ namespace
         CasualRankSlot9,
         ShowMistakeStats,
         BackFromStats,
+        BackToBoardSize, // ChoosingGameMode→ChoosingBoardSizeへ戻る
+        BackToGameMode,  // ChoosingCasualStrength→ChoosingGameModeへ戻る
     };
 
     // ボタン列(画面右側の縦列)内での配置グループ。対局状態(turnState)によって中央グループの
@@ -1113,6 +1115,26 @@ namespace
             rects[i] = rect;
         }
         return rects;
+    }
+
+    // 「戻る」ボタン1個分の幅(盤サイズ・対局モード選択の横一列ボタンと違い、常に1個だけなので
+    // 盤の格子幅いっぱいに広げず、控えめな固定幅にする)
+    constexpr float kBackButtonWidth = 160.0f;
+
+    // 「戻る」ボタンを盤の下部(盤の一番外側の線からkCasualOuterMargin分上がった位置)に
+    // 中央揃えで配置する。盤サイズ選択・対局モード選択・カジュアル強さ選択の主要なボタンより
+    // 一段下の、目立ちすぎない位置に置くための専用レイアウト
+    ButtonRect LayoutBoardBottomButton(ButtonId id, const BoardLayout& layout)
+    {
+        ButtonRect rect;
+        rect.Id = id;
+        rect.Width = kBackButtonWidth;
+        rect.Height = kButtonHeight;
+        rect.CenterX = layout.CenterX;
+        rect.CenterY = layout.CenterY - layout.GridExtent * 0.5f + kCasualOuterMargin + kButtonHeight * 0.5f;
+        rect.Enabled = true;
+        rect.Active = false;
+        return rect;
     }
 
     // カジュアル対局の強さ選択(11.6節)の範囲タブ3個を、盤の上部に横一列・中央揃えで配置する
@@ -1847,9 +1869,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             if (turnState == TurnState::HumanModelMissing)
             {
             }
-            // ChoosingBoardSize/ChoosingGameModeの間は右側縦列にボタンを出さない(選択自体は下記の
-            // 盤中央の横一列ボタンで行う)。ChoosingCasualStrengthの間も同様に右側縦列にボタンを出さない
-            // (強さ選択は下記の盤中央のタブ+グリッドで行う、11.6節参照)。Quitボタンのみ以下で共通追加される
+            // ChoosingBoardSize/ChoosingGameMode/ChoosingCasualStrengthの間は右側縦列にボタンを
+            // 出さない(選択自体は下記の盤中央のボタン(横一列/タブ+グリッド)で行う。一つ前の
+            // 選択へ戻る「戻る」ボタンも盤下部に表示するため、右側縦列には出さない)。
+            // Quitボタンのみ以下で共通追加される
             else if (turnState == TurnState::ChoosingBoardSize || turnState == TurnState::ChoosingGameMode ||
                 turnState == TurnState::ChoosingCasualStrength)
             {
@@ -1960,6 +1983,26 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     }
                     break; // ボタンは重ならない配置のため、1個ヒットしたら以降は調べない
                 }
+            }
+
+            // 「戻る」ボタン(ChoosingGameMode→ChoosingBoardSize、ChoosingCasualStrength→
+            // ChoosingGameMode)。盤下部に単発で表示する(ChoosingBoardSizeは最初の選択のため無し)
+            bool hasBackButton = false;
+            ButtonRect backButtonRect{};
+            if (turnState == TurnState::ChoosingGameMode)
+            {
+                hasBackButton = true;
+                backButtonRect = LayoutBoardBottomButton(ButtonId::BackToBoardSize, layout);
+            }
+            else if (turnState == TurnState::ChoosingCasualStrength)
+            {
+                hasBackButton = true;
+                backButtonRect = LayoutBoardBottomButton(ButtonId::BackToGameMode, layout);
+            }
+            if (hasBackButton && mouseInWindow && clicked && IsPointInButton(backButtonRect, mouseWorldX, mouseWorldY))
+            {
+                turnState = (backButtonRect.Id == ButtonId::BackToBoardSize)
+                    ? TurnState::ChoosingBoardSize : TurnState::ChoosingGameMode;
             }
 
             // カジュアル対局の強さ選択(11.6節)。盤中央に3個の範囲タブと、現在のタブに応じた
@@ -2488,6 +2531,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 const bool isButtonPressed = isButtonHovered && isMouseDown;
                 DrawButton(renderer, gameModeRects[i], gameModeSpecs[i].Label, isButtonHovered, isButtonPressed,
                     boardCenteredStyle);
+            }
+            if (hasBackButton)
+            {
+                const bool isButtonHovered = mouseInWindow && IsPointInButton(backButtonRect, mouseWorldX, mouseWorldY);
+                const bool isButtonPressed = isButtonHovered && isMouseDown;
+                DrawButton(renderer, backButtonRect, L"戻る", isButtonHovered, isButtonPressed);
             }
 
             // カジュアル対局の強さ選択(11.6節)。盤中央のタブ+グリッドを描画する
