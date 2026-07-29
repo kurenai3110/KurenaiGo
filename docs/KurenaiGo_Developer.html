@@ -505,6 +505,7 @@ interval値によらずほぼ一定でした。
 <tr><td>勝率バー</td><td>盤の上マージンに、黒視点の勝率で2分割した横棒(黒側は暗色、白側は明色のスプライト)を常時表示</td></tr>
 <tr><td>地合い可視化(<code>T</code>キー)</td><td>石のない交点のみ、黒視点のownership値が閾値(0.15)を超えたら、黒地=青系・白地=赤系の半透明スプライトを重ねる</td></tr>
 <tr><td>着手ヒント(<code>H</code>キー)</td><td>候補手を<code>Order</code>昇順に並べ、上位3件を金・銀・銅の色分けマーカーで表示(黒の手番中、または棋譜再生中)</td></tr>
+<tr><td>読み筋(PV)</td><td>着手ヒントのマーカーにカーソルを合わせている間だけ、その候補手を選んだ場合の読み筋を半透明の石+手数で盤上に重ねる(8.4節)</td></tr>
 </tbody>
 </table>
 <p>
@@ -517,6 +518,52 @@ interval値によらずほぼ一定でした。
 <code>&amp;reviewAnalysisCache[reviewMoveIndex]</code>、それ以外は<code>nullptr</code>)、
 勝率バー・地合い可視化・着手ヒントの3つの表示判定をこの1箇所に統一しています。
 </p>
+<h3>8.4 候補手の読み筋(PV)表示</h3>
+<p>
+着手ヒントは「どこが good か」しか示さないため、「なぜその手が良いのか」を確認できるよう、
+候補手の読み筋(PV: Principal Variation)を盤上に重ねて表示できるようにしました。
+</p>
+<p>
+kata-analyzeの報告行には各候補手の<code>pv</code>(GTPの頂点表記が可変長で並ぶリスト)が
+含まれていますが、<code>ParseAnalysisLine</code>はこれを次の<code>info</code>/<code>ownership</code>まで
+読み飛ばしていました。これを<code>AnalysisMoveInfo::Pv</code>
+(<code>std::vector&lt;AnalysisPvPoint&gt;</code>)へ収集するよう変更しています。パース時の注意点は次の2つです。
+</p>
+<ul>
+<li><strong>手数の上限</strong>: KataGoは数十手先まで読み筋を返すことがあり、一括解析
+(<code>RequestBatchAnalysis</code>)は1局ぶんの全局面の<code>KataGoAnalysisResult</code>を
+キャッシュに抱えるため、<code>kMaxPvLength</code>(10手)で打ち切ってメモリと描画量の両方を
+抑えています。</li>
+<li><strong>pass等での打ち切り</strong>: <code>ParseNormalVertex</code>が例外を投げる頂点表記
+(<code>pass</code>など)が現れた時点で、そこまでを読み筋として確定し残りは読み飛ばします。
+読み筋は「先頭がその候補手自身で、以降は交互に相手・自分の手」という前提で色を決めるため、
+passを飛ばして詰めてしまうと色の交互性が崩れて盤上に正しく並べられなくなるためです。</li>
+</ul>
+<p>
+描画(<code>DrawPvOverlay</code>)は、<code>i</code>番目の手の色を「<code>i</code>が偶数なら
+<code>analysis.ColorToMove</code>、奇数ならその相手」として決め、実際の石(不透明)と区別できるよう
+<code>kPvStoneAlpha</code>(0.62)の半透明で石を描き、その上に手数を石と反対色で書きます。
+</p>
+<p>
+表示のトリガーは<strong>候補手マーカーへのカーソル合わせ</strong>です。クリックにしなかったのは、
+人間の手番中はクリックがそのまま着手になってしまい、読み筋を確認するだけのつもりで石を
+置いてしまうためです。カーソル判定には、着手可否(空点かどうか)と切り離した
+<code>isHoveringAnyPoint</code>を新設して使います。マーカーの並びと判定の並びがずれないよう、
+上位3件の抽出は<code>CollectHintMoves</code>という共通関数に切り出し、
+<code>DrawMoveHints</code>(色の添字)とカーソル判定の両方が同じ結果を使います。
+読み筋を表示している間は、着手プレビュー(半透明の円)がPVの1手目と重なって紛らわしいため
+描画しません。
+</p>
+<div class="note">
+<p>
+<strong>説明テキストの配置</strong>: 候補手の順位・勝率・読み筋の手数を示すテキスト
+(<code>DrawPvInfoText</code>)は、当初HUDの1行上(盤の下の余白)に置きましたが、
+この余白は高さ約46pxしかなくHUD1行でほぼ埋まっているため、実機では盤の木目に重なって
+ほとんど読めませんでした。現在は勝率テキスト(<code>DrawWinrateText</code>)と同じ行の
+右端へ右揃えで配置しています。勝率テキストは短いので重ならず、対局中・棋譜再生中の
+どちらでも背景が暗い領域に収まります。
+</p>
+</div>
 </section>
 
 <section id="sgf">

@@ -201,6 +201,10 @@ namespace
     };
     constexpr float kHintAlphas[kMaxHintMarkers] = { 0.85f, 0.70f, 0.55f };
 
+    // 着手ヒントのマーカーにカーソルを合わせたときに表示する読み筋(PV)の見た目。
+    // 実際に盤上にある石と区別できるよう、半透明で描く
+    constexpr float kPvStoneAlpha = 0.62f;
+
     // 盤下の余白に表示するHUDテキストの見た目
     constexpr float kHudFontSize = 21.0f;
     constexpr float kHudColorR = 0.92f, kHudColorG = 0.92f, kHudColorB = 0.90f;
@@ -652,19 +656,25 @@ namespace
         }
     }
 
-    // 候補手の上位(最大kMaxHintMarkers件)に順位つきマーカーを描く(Hキーでトグル)
-    void DrawMoveHints(KurenaiEngine2D& renderer, const BoardLayout& layout, TextureHandle whiteTexture,
-        const KataGoAnalysisResult& analysis)
+    // 石の色を表示用の日本語("黒"/"白")にする
+    std::wstring StoneColorLabel(Stone color)
+    {
+        return color == Stone::Black ? L"黒" : L"白";
+    }
+
+    // 着手ヒントとして表示する候補手(Order昇順で最大kMaxHintMarkers件、盤上の座標を持つもののみ)を
+    // 抜き出す。マーカーの描画・読み筋(PV)表示のカーソル判定の両方が同じ並びを使う必要があるため、
+    // 共通の関数として切り出している(順位ごとの色kHintColorsの添字も、この並びの位置と一致する)
+    std::vector<AnalysisMoveInfo> CollectHintMoves(const KataGoAnalysisResult& analysis)
     {
         std::vector<AnalysisMoveInfo> sortedMoves = analysis.TopMoves;
         std::sort(sortedMoves.begin(), sortedMoves.end(),
             [](const AnalysisMoveInfo& a, const AnalysisMoveInfo& b) { return a.Order < b.Order; });
 
-        const float markerSize = layout.LineSpacing * 0.6f;
-        int shown = 0;
+        std::vector<AnalysisMoveInfo> hints;
         for (const AnalysisMoveInfo& move : sortedMoves)
         {
-            if (shown >= kMaxHintMarkers)
+            if (static_cast<int>(hints.size()) >= kMaxHintMarkers)
             {
                 break;
             }
@@ -672,13 +682,79 @@ namespace
             {
                 continue; // passなど盤上の座標を持たない候補は表示しない
             }
-
-            const float x = GridIndexToCoordinate(layout, layout.CenterX, move.Col);
-            const float y = GridIndexToCoordinate(layout, layout.CenterY, move.Row);
-            renderer.DrawSprite(x, y, markerSize, markerSize, 0.0f, whiteTexture,
-                kHintColors[shown][0], kHintColors[shown][1], kHintColors[shown][2], kHintAlphas[shown]);
-            ++shown;
+            hints.push_back(move);
         }
+        return hints;
+    }
+
+    // 候補手の上位(最大kMaxHintMarkers件)に順位つきマーカーを描く(Hキーでトグル)
+    void DrawMoveHints(KurenaiEngine2D& renderer, const BoardLayout& layout, TextureHandle whiteTexture,
+        const std::vector<AnalysisMoveInfo>& hints)
+    {
+        const float markerSize = layout.LineSpacing * 0.6f;
+        for (size_t i = 0; i < hints.size(); ++i)
+        {
+            const float x = GridIndexToCoordinate(layout, layout.CenterX, hints[i].Col);
+            const float y = GridIndexToCoordinate(layout, layout.CenterY, hints[i].Row);
+            renderer.DrawSprite(x, y, markerSize, markerSize, 0.0f, whiteTexture,
+                kHintColors[i][0], kHintColors[i][1], kHintColors[i][2], kHintAlphas[i]);
+        }
+    }
+
+    // 着手ヒントのマーカーにカーソルを合わせたとき、その候補手の読み筋(PV)を盤上に重ねて描く。
+    // 読み筋の先頭はその候補手自身なので、i番目の手の色は「iが偶数なら解析対象色(ColorToMove)、
+    // 奇数ならその相手」になる。実際の石と紛らわしくならないよう半透明で描き、何手目かが分かるよう
+    // 石の上に手数を書く
+    void DrawPvOverlay(KurenaiEngine2D& renderer, const BoardLayout& layout,
+        const KataGoAnalysisResult& analysis, const AnalysisMoveInfo& move)
+    {
+        const float stoneRadius = layout.LineSpacing * 0.46f;
+        const float fontSize = (std::max)(10.0f, layout.LineSpacing * 0.42f);
+
+        for (size_t i = 0; i < move.Pv.size(); ++i)
+        {
+            const Stone color = (i % 2 == 0) ? analysis.ColorToMove : Opponent(analysis.ColorToMove);
+            const float x = GridIndexToCoordinate(layout, layout.CenterX, move.Pv[i].Col);
+            const float y = GridIndexToCoordinate(layout, layout.CenterY, move.Pv[i].Row);
+
+            if (color == Stone::Black)
+            {
+                renderer.DrawCircle(x, y, stoneRadius, kBlackStoneR, kBlackStoneG, kBlackStoneB, kPvStoneAlpha);
+            }
+            else
+            {
+                renderer.DrawCircle(x, y, stoneRadius, kWhiteStoneR, kWhiteStoneG, kWhiteStoneB, kPvStoneAlpha);
+            }
+
+            // 石の色と反対の文字色にして、黒石の上でも白石の上でも読めるようにする
+            const bool onBlack = (color == Stone::Black);
+            renderer.DrawText(x, y, std::to_wstring(i + 1), fontSize,
+                onBlack ? kWhiteStoneR : kBlackStoneR,
+                onBlack ? kWhiteStoneG : kBlackStoneG,
+                onBlack ? kWhiteStoneB : kBlackStoneB, 1.0f, true);
+        }
+    }
+
+    // 読み筋を表示している候補手について、順位・勝率・読み筋の手数を表示する。rankIndexは0始まり
+    // (0=最有力候補)。盤の下の余白はHUD1行でほぼ埋まっており、2行目を置くと盤の木目に重なって
+    // 読めなくなる(実機で確認済み)ため、勝率テキスト(DrawWinrateText)と同じ行の右端へ
+    // 右揃えで置く。勝率テキストは短いので重ならず、対局中・棋譜再生中のどちらでも
+    // 背景が暗い領域に収まる
+    void DrawPvInfoText(KurenaiEngine2D& renderer, const BoardLayout& layout,
+        const KataGoAnalysisResult& analysis, const AnalysisMoveInfo& move, int rankIndex)
+    {
+        const float textX = layout.CenterX + layout.GridExtent * 0.5f;
+        const float textY = layout.CenterY + layout.BoardExtent * 0.5f + kWinrateBarMargin + kWinrateBarHeight +
+            kWinrateTextMargin;
+
+        std::wostringstream text;
+        text << L"読み筋: 第" << (rankIndex + 1) << L"候補 " << FormatVertex(move.Row, move.Col)
+             << L"(" << StoneColorLabel(analysis.ColorToMove) << L"番の勝率 "
+             << std::fixed << std::setprecision(1) << (move.Winrate * 100.0f) << L"%)  以下"
+             << move.Pv.size() << L"手";
+        renderer.DrawText(textX, textY, text.str(), kWinrateTextFontSize,
+            kCommentaryColorR, kCommentaryColorG, kCommentaryColorB, 1.0f,
+            false, TextAlign::Right, TextVerticalAlign::Bottom);
     }
 
     // 対局の進行状態
@@ -1005,12 +1081,6 @@ namespace
             return (std::max)(0.0, (std::min)(1.0, (std::max)(spreadRate, sampleRate)));
         }
     };
-
-    // 石の色を表示用の日本語("黒"/"白")にする
-    std::wstring StoneColorLabel(Stone color)
-    {
-        return color == Stone::Black ? L"黒" : L"白";
-    }
 
     // 盤下のHUDに表示する手番状態・アゲハマ数のテキストを組み立てる。reviewMoveIndex/
     // reviewTotalMoves/reviewResultはturnState==Reviewingの場合のみ使う。aiTargetRatingは
@@ -2239,9 +2309,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 
             int hoverRow = -1;
             int hoverCol = -1;
-            const bool isHovering = mouseInWindow &&
-                TryGetHoveredIntersection(layout, mouseWorldX, mouseWorldY, activeBoardSize, hoverRow, hoverCol) &&
-                board.At(hoverRow, hoverCol) == Stone::Empty;
+            // 石の有無を問わず、カーソルが乗っている交点。着手ヒントのマーカー(石が無い交点にしか
+            // 出ないが、判定を着手可否と切り離しておきたい)へのカーソル合わせ判定に使う
+            const bool isHoveringAnyPoint = mouseInWindow &&
+                TryGetHoveredIntersection(layout, mouseWorldX, mouseWorldY, activeBoardSize, hoverRow, hoverCol);
+            const bool isHovering = isHoveringAnyPoint && board.At(hoverRow, hoverCol) == Stone::Empty;
 
             const bool clicked = renderer.WasMouseButtonPressed(MouseButton::Left);
             // 1回のクリックが同一フレーム内で複数の判定ブロックにまたがって処理されるのを防ぐ。
@@ -3015,6 +3087,29 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             {
                 activeAnalysis = &latestAnalysis;
             }
+            // 着手ヒント(Hキー/ボタンでトグル)として表示する候補手と、そのうちカーソルが
+            // 乗っているもの(読み筋の表示対象)。読み筋は候補手マーカーにカーソルを合わせた
+            // ときだけ表示するため、マーカーの並びと同じCollectHintMovesの結果で判定する
+            std::vector<AnalysisMoveInfo> hintMoves;
+            int hoveredHintIndex = -1;
+            if (activeAnalysis != nullptr && hintOverlayEnabled &&
+                (turnState == TurnState::HumanToMove || turnState == TurnState::Reviewing))
+            {
+                hintMoves = CollectHintMoves(*activeAnalysis);
+                if (isHoveringAnyPoint)
+                {
+                    for (size_t i = 0; i < hintMoves.size(); ++i)
+                    {
+                        if (hintMoves[i].Row == hoverRow && hintMoves[i].Col == hoverCol &&
+                            !hintMoves[i].Pv.empty())
+                        {
+                            hoveredHintIndex = static_cast<int>(i);
+                            break;
+                        }
+                    }
+                }
+            }
+
             const bool haveWinrateToShow = activeAnalysis != nullptr;
             const float displayBlackWinrate = haveWinrateToShow ? ToBlackWinrate(*activeAnalysis) : 0.5f;
             const float displayBlackScoreLead = haveWinrateToShow ? ToBlackScoreLead(*activeAnalysis) : 0.0f;
@@ -3033,10 +3128,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     DrawTerritoryOverlay(renderer, displayBoard, layout, whiteTexture, *activeAnalysis);
                 }
                 DrawStones(renderer, displayBoard, layout, lastMoveRow, lastMoveCol);
-                if (activeAnalysis && hintOverlayEnabled &&
-                    (turnState == TurnState::HumanToMove || turnState == TurnState::Reviewing))
+                if (!hintMoves.empty())
                 {
-                    DrawMoveHints(renderer, layout, whiteTexture, *activeAnalysis);
+                    DrawMoveHints(renderer, layout, whiteTexture, hintMoves);
+                    // 候補手マーカーにカーソルを合わせている間だけ、その手を選んだ場合の
+                    // 読み筋(PV)を半透明の石と手数で盤上に重ねて表示する
+                    if (hoveredHintIndex >= 0)
+                    {
+                        const AnalysisMoveInfo& hovered = hintMoves[static_cast<size_t>(hoveredHintIndex)];
+                        DrawPvOverlay(renderer, layout, *activeAnalysis, hovered);
+                        DrawPvInfoText(renderer, layout, *activeAnalysis, hovered, hoveredHintIndex);
+                    }
                 }
                 if (haveWinrateToShow)
                 {
@@ -3138,7 +3240,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             }
 
             // 手番中、カーソルが空点の交点上にあれば半透明のプレビューを表示する
-            if (turnState == TurnState::HumanToMove && isHovering)
+            // (読み筋を表示している間は、その1手目の石と重なって紛らわしくなるため出さない)
+            if (turnState == TurnState::HumanToMove && isHovering && hoveredHintIndex < 0)
             {
                 const float x = GridIndexToCoordinate(layout, layout.CenterX, hoverCol);
                 const float y = GridIndexToCoordinate(layout, layout.CenterY, hoverRow);

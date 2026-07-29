@@ -556,10 +556,33 @@ namespace KurenaiGo
                     const std::string& key = tokens[i];
                     if (key == "pv")
                     {
-                        // pvは指し手が可変長で続くリストのため、次のinfo/ownershipまで読み飛ばす
+                        // pvは指し手(GTPの頂点表記)が可変長で続くリストで、次のinfo/ownershipまで
+                        // 続く。先頭はこの候補手自身で、以降は交互に相手・自分の手が並ぶ。
+                        // 盤上に重ねて表示できる手数には限りがあるためkMaxPvLength手で打ち切り、
+                        // pass・解釈できない頂点表記が現れた時点でもそこで止める(その先は色の
+                        // 交互性が崩れて盤上に正しく並べられないため)
                         ++i;
                         while (i < tokens.size() && tokens[i] != "info" && tokens[i] != "ownership")
                         {
+                            if (static_cast<int>(move.Pv.size()) < kMaxPvLength)
+                            {
+                                AnalysisPvPoint point;
+                                try
+                                {
+                                    ParseNormalVertex(tokens[i], point.Row, point.Col);
+                                    move.Pv.push_back(point);
+                                }
+                                catch (const std::exception&)
+                                {
+                                    // pass等、盤上の頂点でない手が現れたらそこで読み筋を打ち切る
+                                    // (残りのトークンはこのループで読み飛ばすだけにする)
+                                    while (i < tokens.size() && tokens[i] != "info" && tokens[i] != "ownership")
+                                    {
+                                        ++i;
+                                    }
+                                    break;
+                                }
+                            }
                             ++i;
                         }
                         continue;

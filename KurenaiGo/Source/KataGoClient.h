@@ -54,6 +54,18 @@ namespace KurenaiGo
         int Col = -1;
     };
 
+    // 読み筋(PV: Principal Variation)の1手ぶんの座標。KurenaiGoの内部座標(row=0が盤面下端)
+    struct AnalysisPvPoint
+    {
+        int Row = -1;
+        int Col = -1;
+    };
+
+    // 1つの候補手について保持する読み筋の最大手数。KataGoは数十手先まで読み筋を返すことが
+    // あるが、盤上に重ねて表示できる手数には限りがあり、一括解析(RequestBatchAnalysis)は
+    // 1局ぶんの全局面ぶんをキャッシュに抱えるため、ここで上限を切っておく
+    constexpr int kMaxPvLength = 10;
+
     // kata-analyzeの候補手1件分(1つの解析報告に複数含まれる)
     struct AnalysisMoveInfo
     {
@@ -62,6 +74,10 @@ namespace KurenaiGo
         int Order = 0;      // 0が最有力候補
         float Winrate = 0.5f;  // 解析対象色(ColorToMove)から見た勝率(0〜1)
         int Visits = 0;
+        // この候補手を選んだ場合の読み筋(先頭がこの候補手自身。以降は交互に相手・自分の手)。
+        // 最大kMaxPvLength手まで。pass・解釈できない頂点表記が現れた時点で打ち切るため、
+        // 「先頭から連続する盤上の着手だけ」が入る
+        std::vector<AnalysisPvPoint> Pv;
     };
 
     // kata-analyzeの解析結果(解析対象色=ColorToMoveの視点)
