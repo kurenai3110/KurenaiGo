@@ -32,8 +32,9 @@ namespace KurenaiGo
     void AppendRatingEntry(const std::filesystem::path& path,
         const std::string& timestamp, double ratingAfter, const std::string& result);
 
-    // 対局結果文字列("W+R"/"B+R"/"B+3.5"等)から、黒番(人間)から見た勝敗を
-    // 0.0(負け)/0.5(持碁)/1.0(勝ち)として取り出す。解釈できない文字列の場合はfalseを返す
+    // 対局結果文字列("W+R"/"B+R"/"B+3.5"等)から、黒番から見た勝敗を
+    // 0.0(負け)/0.5(持碁)/1.0(勝ち)として取り出す。解釈できない文字列の場合はfalseを返す。
+    // 人間が白番の対局では呼び出し側で反転して人間視点に直すこと(Main.cppのFinalizeGameResult)
     bool TryParseBlackWinFraction(const std::string& result, double& outScore);
 
     // 標準的なElo式によるレーティング変化量を計算する

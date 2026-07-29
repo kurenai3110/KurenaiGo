@@ -753,10 +753,19 @@ GameMode::Ranked</code>を<code>overlayTogglesAllowed</code>としてまとめ�
 <p>
 対局終了時の結果文字列(<code>"W+R"</code>=人間の投了、<code>"B+R"</code>=KataGoの投了、
 または<code>final_score</code>の応答、例<code>"B+3.5"</code>)から、
-<code>TryParseBlackWinFraction</code>が黒番(人間)視点の勝敗を取り出す。
+<code>TryParseBlackWinFraction</code>が<strong>黒番視点</strong>の勝敗を取り出す。
 <code>"B+"</code>で始まれば勝ち(1.0)、<code>"W+"</code>で始まれば負け(0.0)、
 <code>"0"</code>(持碁)は0.5とする。解釈できない文字列の場合はレーティングを更新せず
 <code>error.log</code>に記録するのみとする(存在しないデータを捏造しない)。
+</p>
+<p>
+Elo更新(10章)は<strong>人間視点</strong>のスコアで行う必要があるため、
+<code>FinalizeGameResult</code>は受け取った<code>humanColor</code>(14章の手番選択で決まる
+今回の対局の人間の色)を見て、人間が白番なら<code>1.0 - blackScore</code>へ反転してから
+<code>ComputeEloDelta</code>へ渡す。14章の手番選択を追加した当初はこの反転が無く、結果文字列を
+そのまま人間視点として扱っていたため、<strong>白番で勝った対局でレーティングが下がる</strong>
+(逆に白番で負けると上がる)不具合があった。結果文字列は常に黒視点であり、人間の色に
+依存しないことに注意。
 </p>
 <h3>10.3 永続化(rating_history.txt)</h3>
 <p>

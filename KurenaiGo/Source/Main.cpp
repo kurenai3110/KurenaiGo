@@ -1537,10 +1537,13 @@ namespace
     // この関数より前にfinalizePlacementRating()ですでにレーティングを確定させており、
     // 未収束のまま対局が終わった場合はそもそも今回はレーティングを確定させない
     // (次回もプレースメントとして再開するため)。いずれにしてもここでの二重計上・
-    // 誤った確定は起きない
+    // 誤った確定は起きない。humanColorは今回の対局で人間が持った色で、結果文字列
+    // (常に黒視点)を人間視点の勝敗へ変換するために使う(14章の手番選択により人間が
+    // 白番になる対局があるため)
     std::filesystem::path FinalizeGameResult(const std::filesystem::path& gamesDir,
         const std::filesystem::path& ratingPath, const std::vector<SgfMove>& moves,
-        const std::string& result, GameMode gameMode, double opponentRatingForThisGame,
+        const std::string& result, GameMode gameMode, Stone humanColor,
+        double opponentRatingForThisGame,
         bool isPlacementGame, RatingData& userRating, int boardSize)
     {
         const std::filesystem::path savedPath = SaveGameRecordSafely(gamesDir, moves, result, boardSize);
@@ -1550,13 +1553,18 @@ namespace
             return savedPath;
         }
 
-        double actualScore = 0.0;
-        if (!TryParseBlackWinFraction(result, actualScore))
+        double blackScore = 0.0;
+        if (!TryParseBlackWinFraction(result, blackScore))
         {
             std::ofstream log("error.log", std::ios::app);
             log << "未知の対局結果文字列のためレーティングを更新しませんでした: " << result << std::endl;
             return savedPath;
         }
+
+        // TryParseBlackWinFractionが返すのは黒視点の勝敗。Elo更新は人間視点で行う必要が
+        // あるため、人間が白番なら反転する(反転しないと白番で勝ったときに負け扱いとなり
+        // レーティングが下がる)
+        const double actualScore = (humanColor == Stone::Black) ? blackScore : 1.0 - blackScore;
 
         userRating.Rating += ComputeEloDelta(userRating.Rating, opponentRatingForThisGame, actualScore, kEloK);
         userRating.GamesPlayed += 1;
@@ -2436,7 +2444,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         finalizePlacementRating();
                         renderer.PlaySound(gameEndSound);
                         lastSavedGamePath = FinalizeGameResult(gamesDir, CurrentRatingPath(), moveHistory, "Void",
-                            currentGameMode, currentAiTargetRating, isCurrentGamePlacement, CurrentUserRating(), currentBoardSize);
+                            currentGameMode, humanColor, currentAiTargetRating, isCurrentGamePlacement, CurrentUserRating(), currentBoardSize);
                         if (currentGameMode == GameMode::Ranked)
                         {
                             beginPostGameAnalysis(lastSavedGamePath);
@@ -2563,7 +2571,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 {
                     renderer.PlaySound(gameEndSound);
                     const std::string result = ResignResultString(Opponent(humanColor));
-                    lastSavedGamePath = FinalizeGameResult(gamesDir, CurrentRatingPath(), moveHistory, result, currentGameMode, currentAiTargetRating, isCurrentGamePlacement, CurrentUserRating(), currentBoardSize);
+                    lastSavedGamePath = FinalizeGameResult(gamesDir, CurrentRatingPath(), moveHistory, result, currentGameMode, humanColor, currentAiTargetRating, isCurrentGamePlacement, CurrentUserRating(), currentBoardSize);
                     if (currentGameMode == GameMode::Ranked)
                     {
                         beginPostGameAnalysis(lastSavedGamePath);
@@ -2615,7 +2623,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     {
                         renderer.PlaySound(gameEndSound);
                         const std::string sgfResult = ResignResultString(humanColor);
-                        lastSavedGamePath = FinalizeGameResult(gamesDir, CurrentRatingPath(), moveHistory, sgfResult, currentGameMode, currentAiTargetRating, isCurrentGamePlacement, CurrentUserRating(), currentBoardSize);
+                        lastSavedGamePath = FinalizeGameResult(gamesDir, CurrentRatingPath(), moveHistory, sgfResult, currentGameMode, humanColor, currentAiTargetRating, isCurrentGamePlacement, CurrentUserRating(), currentBoardSize);
                         if (currentGameMode == GameMode::Ranked)
                         {
                             beginPostGameAnalysis(lastSavedGamePath);
@@ -2659,7 +2667,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 if (kataGo.TryGetFinalScore(score))
                 {
                     renderer.PlaySound(gameEndSound);
-                    lastSavedGamePath = FinalizeGameResult(gamesDir, CurrentRatingPath(), moveHistory, score, currentGameMode, currentAiTargetRating, isCurrentGamePlacement, CurrentUserRating(), currentBoardSize);
+                    lastSavedGamePath = FinalizeGameResult(gamesDir, CurrentRatingPath(), moveHistory, score, currentGameMode, humanColor, currentAiTargetRating, isCurrentGamePlacement, CurrentUserRating(), currentBoardSize);
                     if (currentGameMode == GameMode::Ranked)
                     {
                         beginPostGameAnalysis(lastSavedGamePath);
