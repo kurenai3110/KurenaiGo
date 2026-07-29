@@ -703,7 +703,102 @@ namespace
     {
         Ranked, // レート戦。対局結果に応じてレーティングを更新し履歴に記録する
         Casual, // カジュアル。SGF保存は行うがレーティングには影響しない
+        // 苦手練習(15章)。苦手分野の解析(13章)でもっとも「緩着+悪手」の割合が高い局面を選び、
+        // 直近の棋譜のその局面の入口から対局を再開する。レーティングへの影響が無い点・地合い表示や
+        // 着手ヒントを使える点はカジュアルと同じで、開始局面が空盤面でない点だけが異なる
+        Practice,
     };
+
+    // 苦手分野の集計から、もっとも「緩着+悪手」の割合が高い局面(GamePhaseの整数値0〜2)を返す。
+    // どの局面にも集計データが無ければ-1を返す(その場合は練習の開始局面を決められない)
+    int WorstPhaseFromStats(const MistakeStatsData& stats)
+    {
+        int worstPhase = -1;
+        double worstRate = -1.0;
+        for (int phase = 0; phase < 3; ++phase)
+        {
+            const int* counts = stats.Counts[phase];
+            const int total = counts[0] + counts[1] + counts[2] + counts[3];
+            if (total == 0)
+            {
+                continue;
+            }
+            const double rate = 100.0 *
+                (counts[static_cast<int>(MoveQuality::Loose)] + counts[static_cast<int>(MoveQuality::Blunder)]) / total;
+            if (rate > worstRate)
+            {
+                worstRate = rate;
+                worstPhase = phase;
+            }
+        }
+        return worstPhase;
+    }
+
+    // 苦手練習の開始手数(=その局面から人間が打ち始める手数)を求める。DeterminePhaseと同じく
+    // 総手数を単純に3等分した境界を使い、指定した局面の入口を返す(序盤なら0手目=空盤面)。
+    // 総手数と同じ値にはしない(1手も打てない開始局面になってしまうため、最低1手は残す)
+    int PracticeStartIndex(int totalMoves, int phase)
+    {
+        if (totalMoves <= 0)
+        {
+            return 0;
+        }
+        const int index = static_cast<int>(static_cast<long long>(totalMoves) * phase / 3);
+        return (std::max)(0, (std::min)(index, totalMoves - 1));
+    }
+
+    // Games\フォルダから、指定した盤の目の数で記録された最新の棋譜を1件読み込む。
+    // ファイル名は"game_YYYYMMDD_HHMMSS.sgf"形式で時系列順に並ぶため、名前の降順に走査して
+    // 最初に盤の目の数が一致したものを採用する。見つからない/読み込めない場合はfalseを返す
+    // (棋譜が1つも無い・壊れている場合でもアプリを止めず、呼び出し側で案内を出すため)
+    bool TryLoadLatestGameRecord(const std::filesystem::path& gamesDir, int boardSize,
+        SgfGameRecord& outRecord)
+    {
+        std::vector<std::filesystem::path> candidates;
+        try
+        {
+            if (!std::filesystem::exists(gamesDir))
+            {
+                return false;
+            }
+            for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(gamesDir))
+            {
+                if (entry.is_regular_file() && entry.path().extension() == L".sgf")
+                {
+                    candidates.push_back(entry.path());
+                }
+            }
+        }
+        catch (const std::exception& e)
+        {
+            std::ofstream log("error.log", std::ios::app);
+            log << "棋譜フォルダの走査に失敗しました: " << e.what() << std::endl;
+            return false;
+        }
+
+        std::sort(candidates.begin(), candidates.end(),
+            [](const std::filesystem::path& a, const std::filesystem::path& b) { return a.filename() > b.filename(); });
+
+        for (const std::filesystem::path& path : candidates)
+        {
+            try
+            {
+                SgfGameRecord record = ReadSgfFile(path);
+                if (record.BoardSize == boardSize && !record.Moves.empty())
+                {
+                    outRecord = std::move(record);
+                    return true;
+                }
+            }
+            catch (const std::exception& e)
+            {
+                // 壊れた棋譜は読み飛ばして次の候補を試す(1件の失敗で機能全体を止めない)
+                std::ofstream log("error.log", std::ios::app);
+                log << "棋譜の読み込みに失敗しました(苦手練習の候補): " << path.string() << ": " << e.what() << std::endl;
+            }
+        }
+        return false;
+    }
 
     // 投了・対局終了・KataGoエラー等の通知を盤上に表示するための状態。ネイティブダイアログ
     // (MessageBoxW)は入力を完全にブロックしてしまい「盤上で完結させたい」という要件に合わない
@@ -943,7 +1038,7 @@ namespace
         if (turnState == TurnState::ChoosingGameMode)
         {
             return L"対局モードを選んでください(レート戦: 今のレーティングと互角のAIと対局・手番はランダム/"
-                L"カジュアル: 強さ・手番を自分で選べます)";
+                L"カジュアル: 強さ・手番を自分で選べます/苦手練習: 直近の棋譜の苦手な局面から打ち直します)";
         }
         if (turnState == TurnState::ChoosingCasualStrength)
         {
@@ -990,8 +1085,17 @@ namespace
         }
         else
         {
+            const wchar_t* modeLabel = L"カジュアル";
+            if (gameMode == GameMode::Ranked)
+            {
+                modeLabel = L"レート戦";
+            }
+            else if (gameMode == GameMode::Practice)
+            {
+                modeLabel = L"苦手練習";
+            }
             text += L"   レーティング:" + std::to_wstring(std::lround(userRating)) +
-                L" [" + (gameMode == GameMode::Ranked ? L"レート戦" : L"カジュアル") + L"]";
+                L" [" + modeLabel + L"]";
         }
         text += L"   AI強さ(目安):" + std::to_wstring(std::lround(aiTargetRating)) +
             L" [" + DisplayRankTextForRankIndex(static_cast<int>(std::lround(RankIndexForRating(aiTargetRating)))) +
@@ -1035,6 +1139,7 @@ namespace
         ChooseBoardSize19,
         ChooseRanked,
         ChooseCasual,
+        ChoosePractice, // 苦手練習(15章)
         // カジュアル対局の強さ選択(盤上のタブ+5列2行グリッド、11.6節)。CasualGroup*は
         // タブ切替(0=20〜11級/1=10〜1級/2=1〜9段)、CasualRankSlot*はグリッド内の
         // 10マス分(1〜9段タブはスロット9を使わない)
@@ -1839,6 +1944,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         // 今回の対局でAIが狙っている強さ(目安レーティング)。レート戦なら常にuserRating.Rating
         // (五分の相手)、カジュアルなら段階選択で選んだ値
         double currentAiTargetRating = kInitialRating;
+        // 苦手練習(15章)の開始局面を作るための手順(直近の棋譜の先頭からPracticeStartIndex手ぶん)。
+        // KataGo側の盤面にも同じ手順を再生する必要があるが、KataGoの起動完了(EngineStarting→
+        // 起動完了)を待ってからでないとplayコマンドを送れないため、ここで保持して起動完了時に流し込む。
+        // 空でなければ苦手練習の対局(GameMode::Practice)であることを意味する
+        std::vector<SgfMove> practiceSetupMoves;
+        // practiceSetupMovesをKataGoへまだ流し込んでいない間だけtrue(EngineStarting完了時に消費する)
+        bool practiceSetupPending = false;
         // 対局回数0のままレート戦を始めた場合のみtrue(対局開始時に固定し、対局終了まで変えない)。
         // trueの間はFinalizeGameResultで通常のElo更新をスキップする(PlacementTrackerが対局中に
         // 収束した時点ですでにレーティングを確定させているため)
@@ -1959,6 +2071,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         const auto startNewGame = [&]()
         {
             moveHistory.clear();
+            // 苦手練習(15章)の開始局面は1局かぎりのため、次の対局へ持ち越さない
+            practiceSetupMoves.clear();
+            practiceSetupPending = false;
             // 新規対局のたびに盤の大きさから選び直す(前回選んだ大きさに応じてboardは
             // ChooseBoardSize9/13/19のボタン処理で作り直される)
             turnState = TurnState::ChoosingBoardSize;
@@ -2035,6 +2150,57 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             boardMessage.Text = Utf8ToWide(utf8Text);
             boardMessage.Caption = Utf8ToWide(utf8Caption);
             boardMessage.IsError = isError;
+        };
+
+        // 苦手練習(15章)を開始する。苦手分野の集計(13章)でもっとも「緩着+悪手」の割合が
+        // 高い局面を選び、Games\にある最新の棋譜(現在選択中の盤の目の数のもの)をその局面の
+        // 入口まで再生した盤面から対局を再開する。人間はその局面で手番を持つ側を受け持ち、
+        // AIの強さは現在のレーティングと同じ(=互角)にする。レーティングには影響しない。
+        // 集計データが無い/使える棋譜が無い場合は対局を始めず、理由を盤上メッセージで案内する
+        const auto beginPracticeGame = [&]()
+        {
+            const int worstPhase = WorstPhaseFromStats(mistakeStats);
+            if (worstPhase < 0)
+            {
+                showBoardMessage(
+                    "苦手分野のデータがまだありません。\nレート戦を1局以上打つと自動的に集計されます。",
+                    "苦手練習");
+                return;
+            }
+
+            SgfGameRecord record;
+            if (!TryLoadLatestGameRecord(gamesDir, currentBoardSize, record))
+            {
+                showBoardMessage(
+                    "練習に使える棋譜が見つかりませんでした。\n"
+                    "選んだ盤の大きさで1局以上対局すると、その棋譜から練習できます。",
+                    "苦手練習");
+                return;
+            }
+
+            const int totalMoves = static_cast<int>(record.Moves.size());
+            const int startIndex = PracticeStartIndex(totalMoves, worstPhase);
+
+            practiceSetupMoves.assign(record.Moves.begin(), record.Moves.begin() + startIndex);
+            practiceSetupPending = true;
+
+            board = ReplayMoves(record.Moves, startIndex, record.BoardSize);
+            moveHistory = practiceSetupMoves;
+            // 開始局面で手番を持つ側を人間が受け持つ(黒が先手のため、0手目なら黒)
+            humanColor = (startIndex == 0)
+                ? Stone::Black
+                : Opponent(record.Moves[static_cast<size_t>(startIndex - 1)].Color);
+
+            currentGameMode = GameMode::Practice;
+            beginGameWithTargetRating(CurrentUserRating().Rating);
+
+            static const char* kPhaseNames[3] = { "序盤", "中盤", "終盤" };
+            const std::string message =
+                std::string("苦手な局面(") + kPhaseNames[worstPhase] + ")から練習します。\n" +
+                std::to_string(startIndex) + "手目までを再現し、" +
+                (humanColor == Stone::Black ? "黒" : "白") + "番のあなたが" +
+                std::to_string(startIndex + 1) + "手目から打ち直します。";
+            showBoardMessage(message, "苦手練習");
         };
 
         while (!renderer.ShouldClose())
@@ -2201,6 +2367,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             {
                 gameModeSpecs.push_back({ ButtonId::ChooseRanked, L"レート戦", true, false });
                 gameModeSpecs.push_back({ ButtonId::ChooseCasual, L"カジュアル", true, false });
+                gameModeSpecs.push_back({ ButtonId::ChoosePractice, L"苦手練習", true, false });
             }
             const std::vector<ButtonRect> boardSizeRects = LayoutBoardCenteredColumn(
                 boardSizeSpecs, layout, layout.CenterX, kBoardSelectionButtonWidth, kCasualTabButtonHeight);
@@ -2257,6 +2424,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         // 現在のレーティングが属する範囲のタブを既定選択にする(11.6節)
                         casualStrengthGroup = CasualGroupForRating(CurrentUserRating().Rating);
                         turnState = TurnState::ChoosingCasualStrength;
+                        break;
+                    case ButtonId::ChoosePractice:
+                        beginPracticeGame();
                         break;
                     default: break;
                     }
@@ -2554,6 +2724,41 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     {
                         throw std::runtime_error("KataGoの起動に失敗しました: " + kataGo.LastError());
                     }
+                    // 苦手練習(15章)は空盤面ではなく途中局面から始めるため、KataGo側の盤面にも
+                    // 同じ手順を流し込んでから手番を開始する。playコマンドは1手あたりの往復が
+                    // ごく短く、流し込む手数も1局ぶん(高々数百手)のため描画ループへの影響は
+                    // 実用上問題にならない。通信に失敗した場合は練習を中止し、モード選択へ戻す
+                    if (practiceSetupPending)
+                    {
+                        practiceSetupPending = false;
+                        try
+                        {
+                            for (const SgfMove& move : practiceSetupMoves)
+                            {
+                                if (move.IsPass)
+                                {
+                                    kataGo.PlayPass(move.Color);
+                                }
+                                else
+                                {
+                                    kataGo.PlayMove(move.Color, move.Row, move.Col);
+                                }
+                            }
+                            // 開始局面の手番は必ず人間(beginPracticeGameでhumanColorを合わせている)
+                            enterHumanToMove();
+                        }
+                        catch (const std::exception& e)
+                        {
+                            std::ofstream log("error.log", std::ios::app);
+                            log << "苦手練習の開始局面をKataGoへ反映できませんでした: " << e.what() << std::endl;
+                            showBoardMessage(
+                                std::string("苦手練習の開始局面をKataGoへ反映できませんでした:\n") + e.what(),
+                                "苦手練習", true);
+                            practiceSetupMoves.clear();
+                            startNewGame();
+                        }
+                        break;
+                    }
                     // 黒が必ず先手のため、人間が黒番ならHumanToMove、白番ならAI(黒番)から始める
                     if (humanColor == Stone::Black)
                     {
@@ -2594,7 +2799,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         enterAIThinking();
                     }
                 }
-                else if (clicked && isHovering)
+                // clickConsumedを見るのは、盤上メッセージ(BoardMessageState)のOKボタンや盤上の
+                // ボタンを押したクリックが、そのまま背後の交点への着手として二重に処理されるのを
+                // 防ぐため(苦手練習(15章)の案内メッセージのように、HumanToMoveと同時に
+                // メッセージが出ている状況で実際に発生した)
+                else if (clicked && !clickConsumed && isHovering)
                 {
                     if (board.TryPlay(hoverRow, hoverCol, humanColor))
                     {

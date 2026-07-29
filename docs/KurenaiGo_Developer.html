@@ -145,7 +145,8 @@
     <li><a href="#mistakes">12. 苦手分野の解析</a></li>
     <li><a href="#board-message">13. 投了・対局終了等の通知(盤上メッセージ)</a></li>
     <li><a href="#turn-color">14. 手番(黒/白)の選択</a></li>
-    <li><a href="#future">15. 今後の課題</a></li>
+    <li><a href="#practice">15. 苦手練習(途中局面からの対局再開)</a></li>
+    <li><a href="#future">16. 今後の課題</a></li>
   </ol>
 </nav>
 
@@ -1350,8 +1351,82 @@ KataGo通信エラー・KataGo着手反映エラー・終局)のみで、<code>w
 </p>
 </section>
 
+<section id="practice">
+<h2>15. 苦手練習(途中局面からの対局再開)</h2>
+<p>
+12章の苦手分野の解析は「どの局面が苦手か」を集計するだけで、そこから練習へつなげる導線が無かった。
+苦手練習は、その集計結果をそのまま対局の開始局面の決定に使う対局モードで、
+<code>GameMode::Practice</code>として<code>Ranked</code>/<code>Casual</code>に並ぶ3つ目の値を追加した。
+レーティング更新をスキップする条件(<code>FinalizeGameResult</code>の
+<code>gameMode != GameMode::Ranked</code>)と、地合い表示・着手ヒントを許可する条件
+(<code>overlayTogglesAllowed</code>)はどちらも「レート戦以外」という判定のため、
+<code>Practice</code>を追加するだけでカジュアルと同じ扱いになり、追加の分岐は要らなかった。
+</p>
+<h3>15.1 開始局面の決め方</h3>
+<p>
+<code>WorstPhaseFromStats</code>が<code>MistakeStatsData</code>から「緩着+悪手」の割合が最大の
+<code>GamePhase</code>を求め、<code>PracticeStartIndex(totalMoves, phase)</code>が
+<code>DeterminePhase</code>と同じ3等分の境界(<code>totalMoves * phase / 3</code>)でその局面の
+入口の手数を返す。総手数と同じ値にはならないよう<code>totalMoves - 1</code>で上限を切っている
+(1手も打てない開始局面になってしまうため)。
+</p>
+<p>
+棋譜は<code>TryLoadLatestGameRecord</code>が<code>Games\</code>を走査して選ぶ。ファイル名は
+<code>game_YYYYMMDD_HHMMSS.sgf</code>で時系列順に並ぶため、<strong>名前の降順に走査して最初に
+盤の目の数が一致したもの</strong>を採用する(全件を読んでから日付でソートする必要が無い)。
+壊れて<code>ReadSgfFile</code>が例外を投げる棋譜は<code>error.log</code>へ記録して読み飛ばし、
+次の候補を試す。1件も見つからない場合・苦手分野の集計データが空の場合は対局を開始せず、
+盤上メッセージ(13章)で理由を案内して<code>ChoosingGameMode</code>に留まる
+(存在しないデータから開始局面を捏造しない)。
+</p>
+<h3>15.2 KataGo側の盤面を途中局面に合わせる</h3>
+<p>
+KurenaiGo側の盤面は<code>ReplayMoves</code>(9.4節で棋譜再生用に用意済みの関数)をそのまま
+使って作れるが、KataGo側の盤面も同じ局面にしないと解析・<code>genmove</code>が噛み合わない。
+<code>play</code>コマンドはプロセス起動後にしか送れないため、開始局面までの手順を
+<code>practiceSetupMoves</code>に保持し、<code>TurnState::EngineStarting</code>の完了時
+(<code>IsStartupComplete()</code>かつ<code>!StartupFailed()</code>)にまとめて
+<code>KataGoClient::PlayMove</code>/<code>PlayPass</code>で流し込む。
+</p>
+<p>
+この流し込みは同期呼び出し(<code>Exchange</code>)のため描画ループ上で行われるが、
+<code>play</code>1手あたりの往復はごく短く、流し込む手数も1局ぶん(高々数百手)のため、
+実機で9路30手の棋譜から10手ぶんを流し込んでもフレーム落ちは体感できなかった。通信に失敗した
+場合は<code>error.log</code>への記録と盤上メッセージでの通知を行い、
+<code>startNewGame()</code>でモード選択へ戻す(中途半端な局面のまま対局を続けない)。
+</p>
+<p>
+人間が受け持つ色は、開始局面で手番を持つ側(<code>startIndex == 0</code>なら黒、そうでなければ
+<code>Opponent(record.Moves[startIndex - 1].Color)</code>)に固定する。SGFには「どちらを人間が
+持っていたか」が記録されていないため、元の対局で人間がどちらだったかを推測することはしない。
+このため<code>EngineStarting</code>完了時の通常の分岐(14章の
+<code>humanColor == Stone::Black</code>による判定)は使わず、苦手練習の経路では常に
+<code>enterHumanToMove()</code>を呼ぶ。
+</p>
+<p>
+<code>moveHistory</code>は開始局面までの手順で初期化するため、対局終了時に保存されるSGFは
+元の対局の序盤も含めた1局まるごとの棋譜になる(棋譜再生・損失グラフもそのまま使える)。
+</p>
+<h3>15.3 盤上メッセージ表示中のクリックが着手として二重処理される問題</h3>
+<p>
+苦手練習の開始案内(盤上メッセージ)は、<strong>対局が始まる直前</strong>に表示される点が
+既存のメッセージ(投了・対局終了・KataGoエラー等。いずれも表示と同時に
+<code>TurnState::GameOver</code>へ遷移する)と異なる。このため
+<code>TurnState::HumanToMove</code>とメッセージ表示が同時に成立する状況が初めて発生し、
+<code>OK</code>ボタンを押したクリックがそのまま背後の交点への着手としても処理されて
+石が1つ余分に置かれる不具合が実機で再現した。
+</p>
+<p>
+原因は、着手処理(<code>case TurnState::HumanToMove:</code>の<code>clicked &amp;&amp; isHovering</code>)が
+1フレーム内の多重処理を防ぐ<code>clickConsumed</code>フラグを見ていなかったこと。他の入力経路
+(盤上ボタン・戻るボタン等)はすべて<code>!clickConsumed</code>で保護されていたが、着手だけが
+例外になっていた。<code>clickConsumed</code>はフレーム先頭で<code>boardMessage.Active</code>で
+初期化されるため、条件に<code>!clickConsumed</code>を加えるだけで修正できる。
+</p>
+</section>
+
 <section id="future">
-<h2>15. 今後の課題</h2>
+<h2>16. 今後の課題</h2>
 <ul>
 <li>対局中の動的な強さ変更(現状KataGo起動後に強さを変える確立された方法が無いため、
 11章の実装は対局開始時の1回のみとしている)</li>
@@ -1369,7 +1444,7 @@ KataGo通信エラー・KataGo着手反映エラー・終局)のみで、<code>w
 <li>着手の意味・役割そのものの言語化(「最善手級/やや損/緩着/悪手」という勝率変化ベースの
 判定(9.5節)に加えて、その手が「地を囲う手」「相手の石を攻める手」等、意図・役割まで
 言語化する。優先度は低い)</li>
-<li>色の選択(現在は人間=黒固定)・ハンディキャップ対局</li>
+<li>ハンディキャップ対局(置き石。手番の選択自体は14章で実装済み)</li>
 <li>過去の複数対局から選んで読み込む機能(現状は直前の対局のみ)</li>
 <li>損失グラフをクリックして該当手数へジャンプする操作(現状は表示のみ)</li>
 </ul>
