@@ -664,6 +664,18 @@ SGFの座標は列→行の順でa〜s(0〜18)、行は盤面<strong>上端</str
 現在の手数には小さな丸印を表示します。一括解析中はキューが埋まるにつれてグラフが徐々に
 完成していきます。
 </p>
+<p>
+損失グラフはクリックでその手数へジャンプできます。描画とクリック判定が同じ矩形を使う必要が
+あるため、グラフの範囲は<code>ComputeLossGraphRect(contentWidth, windowHeight)</code>
+(<code>LossGraphRect</code>を返す)に切り出し、<code>DrawLossGraph</code>もこの矩形を受け取る形に
+変えました。逆算は<code>TryGetLossGraphMoveIndex</code>が行い、横軸を0手目〜総手数に等分している
+前提で<code>lround((worldX - Left) / 幅 * 総手数)</code>を手数とし、矩形の外ならfalseを返します。
+クリックできることが分かるよう、カーソルが矩形内にある間はその手数の位置に縦の目安線を描きます
+(<code>DrawLossGraph</code>の<code>hoveredIndex</code>引数)。ジャンプ後の処理は
+<code>→</code>/<code>←</code>キーと共通で、<code>indexChanged</code>を立てて
+<code>ReplayMoves</code>で盤面を作り直すだけです(解析はキャッシュ済みのためKataGoへは
+問い合わせません)。
+</p>
 <h3>9.5 着手の言語化</h3>
 <p>
 損失グラフの上には、その手数に至った1手(<code>reviewRecord.Moves[reviewMoveIndex - 1]</code>)が
@@ -1558,7 +1570,6 @@ UTF-8版はそれを呼ぶだけにしています。盤上メッセージのパ
 言語化する。優先度は低い)</li>
 <li>ハンディキャップ対局(置き石。手番の選択自体は14章で実装済み)</li>
 <li>過去の複数対局から選んで読み込む機能(現状は直前の対局のみ)</li>
-<li>損失グラフをクリックして該当手数へジャンプする操作(現状は表示のみ)</li>
 </ul>
 </section>
 

@@ -184,6 +184,10 @@ namespace
     constexpr float kGraphReferenceColorR = 0.45f, kGraphReferenceColorG = 0.45f, kGraphReferenceColorB = 0.48f;
     constexpr float kGraphMarkerRadius = 4.5f;
     constexpr float kGraphMarkerColorR = 1.0f, kGraphMarkerColorG = 1.0f, kGraphMarkerColorB = 1.0f;
+    // 損失グラフ上でカーソルが乗っている手数に描く縦の目安線(クリックでジャンプできる合図)
+    constexpr float kGraphHoverLineThickness = 1.5f;
+    constexpr float kGraphHoverColorR = 0.95f, kGraphHoverColorG = 0.95f, kGraphHoverColorB = 0.95f;
+    constexpr float kGraphHoverAlpha = 0.45f;
 
     // 地合い可視化(Tキーでトグル)の見た目。黒地=青系、白地=赤系のオーバーレイ
     constexpr float kTerritoryBlackR = 0.25f, kTerritoryBlackG = 0.45f, kTerritoryBlackB = 0.95f;
@@ -1867,11 +1871,51 @@ namespace
             false, TextAlign::Left, TextVerticalAlign::Bottom);
     }
 
+    // 損失グラフ(棋譜再生中のみ、盤上部のkGraphAreaHeight帯の下段)の描画範囲。描画と
+    // クリック判定(該当手数へのジャンプ)の両方が同じ矩形を使う必要があるため関数に切り出す。
+    // contentWidthは盤を内包する左側の利用可能幅(BoardLayout::ContentWidth)
+    struct LossGraphRect
+    {
+        float Left = 0.0f;
+        float Right = 0.0f;
+        float Bottom = 0.0f;
+        float Top = 0.0f;
+    };
+
+    LossGraphRect ComputeLossGraphRect(float contentWidth, uint32_t windowHeight)
+    {
+        LossGraphRect rect;
+        rect.Left = kGraphMarginX;
+        rect.Right = contentWidth - kGraphMarginX;
+        rect.Bottom = static_cast<float>(windowHeight) - kGraphAreaHeight + kGraphMarginBottom;
+        rect.Top = static_cast<float>(windowHeight) - kCommentaryHeight - kGraphMarginTop;
+        return rect;
+    }
+
+    // 損失グラフ上のワールド座標に対応する手数(0〜totalMoves)を求める。グラフの矩形の外なら
+    // falseを返す。グラフは横軸を0手目〜totalMovesに等分して描いているため、その逆算になる
+    bool TryGetLossGraphMoveIndex(const LossGraphRect& rect, float worldX, float worldY, int totalMoves,
+        int& outIndex)
+    {
+        if (totalMoves <= 0 ||
+            worldX < rect.Left || worldX > rect.Right || worldY < rect.Bottom || worldY > rect.Top)
+        {
+            return false;
+        }
+        const float width = (std::max)(1.0f, rect.Right - rect.Left);
+        const float ratio = (worldX - rect.Left) / width;
+        const int index = static_cast<int>(std::lround(ratio * static_cast<float>(totalMoves)));
+        outIndex = (std::max)(0, (std::min)(totalMoves, index));
+        return true;
+    }
+
     // 損失グラフ(棋譜再生中のみ、盤上部のkGraphAreaHeight帯の下段に黒視点勝率の推移を描く)。
     // hasCached[i]がtrueの手数のみ値が有効(未解析の区間は線が途切れる)。
-    // analysisCache/hasCachedのサイズは総手数+1(0手目〜総手数)
-    void DrawLossGraph(KurenaiEngine2D& renderer, uint32_t windowWidth, uint32_t windowHeight,
-        const std::vector<KataGoAnalysisResult>& analysisCache, const std::vector<bool>& hasCached, int currentIndex)
+    // analysisCache/hasCachedのサイズは総手数+1(0手目〜総手数)。
+    // hoveredIndexが0以上なら、クリックでジャンプできることが分かるようその手数に縦の目安線を描く
+    void DrawLossGraph(KurenaiEngine2D& renderer, const LossGraphRect& rect,
+        const std::vector<KataGoAnalysisResult>& analysisCache, const std::vector<bool>& hasCached,
+        int currentIndex, int hoveredIndex)
     {
         const int totalMoves = static_cast<int>(hasCached.size()) - 1;
         if (totalMoves <= 0)
@@ -1879,10 +1923,10 @@ namespace
             return;
         }
 
-        const float graphLeft = kGraphMarginX;
-        const float graphRight = static_cast<float>(windowWidth) - kGraphMarginX;
-        const float graphBottom = static_cast<float>(windowHeight) - kGraphAreaHeight + kGraphMarginBottom;
-        const float graphTop = static_cast<float>(windowHeight) - kCommentaryHeight - kGraphMarginTop;
+        const float graphLeft = rect.Left;
+        const float graphRight = rect.Right;
+        const float graphBottom = rect.Bottom;
+        const float graphTop = rect.Top;
         const float graphWidth = (std::max)(1.0f, graphRight - graphLeft);
         const float graphHeight = (std::max)(1.0f, graphTop - graphBottom);
 
@@ -1899,6 +1943,14 @@ namespace
         const float midY = yForWinrate(0.5f);
         renderer.DrawLine(graphLeft, midY, graphRight, midY, kGraphReferenceLineThickness,
             kGraphReferenceColorR, kGraphReferenceColorG, kGraphReferenceColorB, 1.0f);
+
+        // カーソルが乗っている手数の縦線(クリックでその手数へジャンプできることを示す)
+        if (hoveredIndex >= 0 && hoveredIndex <= totalMoves)
+        {
+            const float hoverX = xForIndex(hoveredIndex);
+            renderer.DrawLine(hoverX, graphBottom, hoverX, graphTop, kGraphHoverLineThickness,
+                kGraphHoverColorR, kGraphHoverColorG, kGraphHoverColorB, kGraphHoverAlpha);
+        }
 
         // キャッシュ済みの区間のみ線分で結ぶ
         for (int i = 0; i < totalMoves; ++i)
@@ -3178,6 +3230,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     --reviewMoveIndex;
                     indexChanged = true;
                 }
+                // 損失グラフをクリックしたら、その位置の手数へ直接ジャンプする(1手ずつ送らずに
+                // 形勢が動いた手へ飛べるようにするため)
+                else if (mouseInWindow && clicked && !clickConsumed)
+                {
+                    int jumpIndex = 0;
+                    if (TryGetLossGraphMoveIndex(ComputeLossGraphRect(layout.ContentWidth, height),
+                        mouseWorldX, mouseWorldY, totalMoves, jumpIndex) && jumpIndex != reviewMoveIndex)
+                    {
+                        reviewMoveIndex = jumpIndex;
+                        indexChanged = true;
+                    }
+                }
                 if (indexChanged)
                 {
                     // 棋譜再生開始時に全局面を一括解析済み(または対局後解析のキャッシュを
@@ -3307,8 +3371,22 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     const std::wstring commentary = BuildMoveCommentary(reviewRecord, reviewMoveIndex,
                         reviewAnalysisCache, reviewHasCached);
                     DrawMoveCommentary(renderer, height, commentary);
-                    DrawLossGraph(renderer, static_cast<uint32_t>(layout.ContentWidth), height,
-                        reviewAnalysisCache, reviewHasCached, reviewMoveIndex);
+
+                    // カーソルが損失グラフ上にあれば、その手数に縦線を出してクリックで
+                    // ジャンプできることを示す
+                    const LossGraphRect graphRect = ComputeLossGraphRect(layout.ContentWidth, height);
+                    int graphHoverIndex = -1;
+                    if (mouseInWindow && !boardMessage.Active)
+                    {
+                        int hoveredMoveIndex = 0;
+                        if (TryGetLossGraphMoveIndex(graphRect, mouseWorldX, mouseWorldY,
+                            static_cast<int>(reviewRecord.Moves.size()), hoveredMoveIndex))
+                        {
+                            graphHoverIndex = hoveredMoveIndex;
+                        }
+                    }
+                    DrawLossGraph(renderer, graphRect, reviewAnalysisCache, reviewHasCached,
+                        reviewMoveIndex, graphHoverIndex);
                 }
                 DrawHud(renderer, layout, turnState, displayBoard,
                     reviewMoveIndex, static_cast<int>(reviewRecord.Moves.size()), reviewRecord.Result,
