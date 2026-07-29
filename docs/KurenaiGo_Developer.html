@@ -146,7 +146,8 @@
     <li><a href="#board-message">13. 投了・対局終了等の通知(盤上メッセージ)</a></li>
     <li><a href="#turn-color">14. 手番(黒/白)の選択</a></li>
     <li><a href="#practice">15. 苦手練習(途中局面からの対局再開)</a></li>
-    <li><a href="#future">16. 今後の課題</a></li>
+    <li><a href="#undo">16. 待った(打ち直しと比較)</a></li>
+    <li><a href="#future">17. 今後の課題</a></li>
   </ol>
 </nav>
 
@@ -1472,8 +1473,72 @@ KurenaiGo側の盤面は<code>ReplayMoves</code>(9.4節で棋譜再生用に用�
 </p>
 </section>
 
+<section id="undo">
+<h2>16. 待った(打ち直しと比較)</h2>
+<p>
+「悪手を打った」ことは対局後の解析(12章)や棋譜再生(9.4節)で分かりますが、その場で
+打ち直して比べることはできませんでした。待ったは、自分の手番中に<strong>直前の1往復
+(自分の手+AIの応手)</strong>を取り消して手番へ戻す機能です。地合い表示・着手ヒントと同様に
+補助機能のため、レート戦では使えません(<code>currentGameMode != GameMode::Ranked</code>)。
+</p>
+<h3>16.1 盤面の巻き戻し</h3>
+<p>
+KataGo側は<code>KataGoClient::Undo()</code>(GTPの<code>undo</code>)を2回呼んで戻します。
+KurenaiGo側は<code>moveHistory</code>から末尾2件を取り除き、<code>ReplayMoves</code>
+(9.4節で棋譜再生用に用意済み)で盤面を作り直します。アゲハマ・コウの状態も再計算されるため、
+巻き戻し専用のロジックは要りません。
+</p>
+<p>
+2回の<code>undo</code>のうち片方だけが成功した状態でKurenaiGo側を更新すると、両者の局面が
+恒久的にずれてしまいます。そのため<strong>2回とも成功した場合のみKurenaiGo側を更新</strong>し、
+例外が出た場合は他のKataGo通信エラーと同様に盤上メッセージを出して
+<code>TurnState::GameOver</code>へ遷移させます(ずれたまま対局を続けない)。
+</p>
+<p>
+戻せる条件は<code>CanUndoLastExchange</code>で判定します。「末尾がAIの手・その1つ前が自分の手」で
+並んでいることに加え、苦手練習(15章)の開始局面より前へ戻さないよう
+<code>practiceSetupMoves.size()</code>を下限として渡します。人間が白番の場合も
+<code>Opponent(humanColor)</code>で判定するためそのまま成立します。
+</p>
+<h3>16.2 比較表示に使うデータ</h3>
+<p>
+「あなたが打った手」と「KataGoが最善としていた手」の勝率は、<strong>同じ1つの解析結果</strong>
+——自分が着手する直前の局面を<code>humanColor</code>視点で解析したもの——から取り出します。
+<code>kata-analyze</code>は候補手ごとに<code>winrate</code>を返すため、
+<code>TopMoves</code>から「実際に打った座標に一致する候補」と「<code>Order == 0</code>の候補」を
+拾うだけで両方の勝率が揃い、KataGoへの追加の問い合わせは要りません。
+</p>
+<p>
+そのために、人間が着手・パスした瞬間に<code>latestAnalysis</code>/<code>hasAnalysis</code>を
+<code>undoBaseAnalysis</code>/<code>hasUndoBaseAnalysis</code>へ控えます(<code>enterHumanToMove</code>が
+<code>RequestAnalysis(humanColor)</code>を出しているため、この時点の<code>latestAnalysis</code>は
+必ず「自分の手番の局面・自分視点」になります)。控えるのは1手ぶんだけなので、続けて2回
+「待った」をした場合、2回目は比較の材料が無く<code>BuildUndoComparisonText</code>が
+「(着手時点の解析が無く比較できません)」を返します。打った手が<code>TopMoves</code>に
+含まれない場合(KataGoが報告するのは探索した上位のみ)も同様に、数値を作らず
+「候補手に入っていませんでした」と表示します。
+</p>
+<div class="note">
+<p>
+<strong>解析中のundoと結果の取り違え</strong>: <code>Undo()</code>は<code>Exchange</code>経由で
+<code>m_IoMutex</code>を取るため、ライブ解析(<code>kata-analyze</code>)の実行中に呼ぶと解析の
+完了待ちでブロックします(<code>PlayMove</code>と同じ性質)。また、巻き戻す前の局面に対する
+解析が飛んでいる可能性がありますが、直後に呼ぶ<code>enterHumanToMove()</code>→
+<code>RequestAnalysis</code>が「ワーカースレッドをjoinしてから<code>m_AnalysisReady</code>を
+falseにする」順序になっているため、古い局面の解析結果は読み出される前に破棄されます。
+</p>
+</div>
+<p>
+本文は<code>FormatVertex</code>など<code>std::wstring</code>を返すヘルパーで組み立てるため、
+<code>showBoardMessage</code>(UTF-8を受け取る)とは別に<code>showBoardMessageWide</code>を用意し、
+UTF-8版はそれを呼ぶだけにしています。盤上メッセージのパネル幅は
+<code>kMessagePanelWidth</code>(460px)固定でテキストの折り返しは行わないため、各行は
+20文字強に収まるよう短く保つ必要があります。
+</p>
+</section>
+
 <section id="future">
-<h2>16. 今後の課題</h2>
+<h2>17. 今後の課題</h2>
 <ul>
 <li>対局中の動的な強さ変更(現状KataGo起動後に強さを変える確立された方法が無いため、
 11章の実装は対局開始時の1回のみとしている)</li>

@@ -138,6 +138,13 @@ namespace KurenaiGo
         void PlayMove(Stone color, int row, int col);
         void PlayPass(Stone color);
 
+        // 直前の1手をKataGo側の盤面から取り消す(GTPのundo。同期呼び出し)。
+        // 「待った」(16章)で、人間の着手とそれに対するAIの応手の2手を戻すために2回呼ぶ。
+        // 解析(kata-analyze)の実行中に呼ぶとm_IoMutexの解放待ちでブロックするが、
+        // PlayMoveと同じ性質のため呼び出し側の扱いは変わらない。
+        // 戻せる手が無い場合はGTPがエラーを返すため、呼び出し側は手数を確認してから呼ぶこと
+        void Undo();
+
         // KataGo側の盤面を空盤面へ戻す(同期呼び出し。clear_board応答は一瞬で返るため)。
         // RequestBatchAnalysisは順方向専用で内部でclear_boardを1回だけ送るため、これは
         // 現状呼ばれていないが、盤面を明示的に空へ戻したい場合のための汎用APIとして残している

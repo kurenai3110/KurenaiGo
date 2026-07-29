@@ -1199,6 +1199,7 @@ namespace
         ToggleHint,
         Pass,
         Resign,
+        Undo, // 待った(16章)。直前の自分の手とAIの応手を取り消して手番に戻る
         StartReview,
         ReviewPrev,
         ReviewNext,
@@ -1776,6 +1777,82 @@ namespace
         return replayBoard;
     }
 
+    // 「待った」(16章)で直前の1往復(自分の手+AIの応手)を戻せるかどうかを判定する。
+    // 戻せるのは「末尾がAIの手・その1つ前が自分の手」で並んでいる場合のみ。minMoveCountは
+    // 戻せる下限の手数で、苦手練習(15章)の開始局面までの手順を戻せないようにするために使う
+    bool CanUndoLastExchange(const std::vector<SgfMove>& moveHistory, Stone humanColor, size_t minMoveCount)
+    {
+        if (moveHistory.size() < minMoveCount + 2)
+        {
+            return false;
+        }
+        const size_t last = moveHistory.size() - 1;
+        return moveHistory[last].Color == Opponent(humanColor) &&
+            moveHistory[last - 1].Color == humanColor;
+    }
+
+    // 「待った」で戻した自分の手について、その手を打つ直前に取得済みだった解析結果から
+    // 「あなたが打った手」と「KataGoが最善としていた手」の勝率を並べた説明文を組み立てる。
+    // どちらの勝率も同じ1つの解析(着手前の局面・手番=自分)から取るため、KataGoへの
+    // 追加の問い合わせは不要。着手した時点で解析が間に合っていなかった場合(hasAnalysisが
+    // falseのまま着手した場合)は比較を諦め、戻したことだけを伝える(数値を捏造しない)。
+    // 盤上メッセージのパネル幅(kMessagePanelWidth=460px)に収まるよう、各行は短く保つこと
+    std::wstring BuildUndoComparisonText(const SgfMove& undoneMove, bool hasBaseAnalysis,
+        const KataGoAnalysisResult& baseAnalysis)
+    {
+        std::wostringstream text;
+        text << L"自分の手とKataGoの応手を取り消しました。";
+        if (!hasBaseAnalysis)
+        {
+            text << L"\n(着手時点の解析が無く比較できません)";
+            return text.str();
+        }
+
+        bool foundPlayed = false;
+        float playedWinrate = 0.0f;
+        bool foundBest = false;
+        int bestRow = -1;
+        int bestCol = -1;
+        float bestWinrate = 0.0f;
+        for (const AnalysisMoveInfo& candidate : baseAnalysis.TopMoves)
+        {
+            if (!undoneMove.IsPass && candidate.Row == undoneMove.Row && candidate.Col == undoneMove.Col)
+            {
+                foundPlayed = true;
+                playedWinrate = candidate.Winrate;
+            }
+            if (candidate.Order == 0 && candidate.Row >= 0 && candidate.Col >= 0)
+            {
+                foundBest = true;
+                bestRow = candidate.Row;
+                bestCol = candidate.Col;
+                bestWinrate = candidate.Winrate;
+            }
+        }
+
+        text << std::fixed << std::setprecision(1);
+        text << L"\nあなたの手 "
+             << (undoneMove.IsPass ? std::wstring(L"パス") : FormatVertex(undoneMove.Row, undoneMove.Col))
+             << L": ";
+        if (foundPlayed)
+        {
+            text << L"勝率 " << (playedWinrate * 100.0f) << L"%";
+        }
+        else
+        {
+            // KataGoが報告する候補手は探索した上位のみのため、打った手が含まれないことがある
+            text << L"候補手に入っていませんでした";
+        }
+
+        if (foundBest)
+        {
+            text << L"\nKataGoの最善手 " << FormatVertex(bestRow, bestCol)
+                 << L": 勝率 " << (bestWinrate * 100.0f) << L"%";
+        }
+        text << L"\n(着手前の局面での、あなたから見た勝率)";
+        return text.str();
+    }
+
     // 盤上部の帯の上段に、着手の言語化コメントを描く(棋譜再生中のみ)
     void DrawMoveCommentary(KurenaiEngine2D& renderer, uint32_t windowHeight, const std::wstring& commentary)
     {
@@ -2101,6 +2178,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         // 解析(kata-analyze)の最新結果。対局中の勝率表示・地合い可視化・着手ヒントが共通で使う
         KataGoAnalysisResult latestAnalysis;
         bool hasAnalysis = false;
+        // 「待った」(16章)の比較表示用に、自分が着手する直前の解析結果(手番=自分)を控えておく。
+        // 着手のたびに上書きし、「待った」で消費する。1手ぶんしか保持しないため、続けて2回
+        // 「待った」をした場合、2回目は比較を表示できない(数値を捏造しないため、その旨を表示する)
+        KataGoAnalysisResult undoBaseAnalysis;
+        bool hasUndoBaseAnalysis = false;
         // TryGetAnalysisResultは同じ結果を読み出すたびtrueを返し続ける(呼び出し側で状態を
         // 消費する設計ではない)ため、PlacementTrackerへは1手番につき1回だけサンプルを渡すよう
         // この手番でサンプル済みかどうかをここで別途追跡する(enterHumanToMoveでfalseに戻す)
@@ -2144,6 +2226,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             // 苦手練習(15章)の開始局面は1局かぎりのため、次の対局へ持ち越さない
             practiceSetupMoves.clear();
             practiceSetupPending = false;
+            // 「待った」(16章)の比較用に控えていた前の対局の解析結果も持ち越さない
+            hasUndoBaseAnalysis = false;
             // 新規対局のたびに盤の大きさから選び直す(前回選んだ大きさに応じてboardは
             // ChooseBoardSize9/13/19のボタン処理で作り直される)
             turnState = TurnState::ChoosingBoardSize;
@@ -2214,12 +2298,19 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         // 投了・対局終了・KataGoエラー等の通知(盤上表示、BoardMessageState参照)。
         // 呼び出し側は従来のShowMessageBoxUtf8と同じ(UTF-8のstd::string)引数で呼べるようにする
         BoardMessageState boardMessage;
-        const auto showBoardMessage = [&](const std::string& utf8Text, const std::string& utf8Caption, bool isError = false)
+        // 本文をUTF-16で組み立てる呼び出し側(「待った」の比較文など、FormatVertex等の
+        // std::wstringを返すヘルパーを使う箇所)向け
+        const auto showBoardMessageWide = [&](const std::wstring& text, const std::wstring& caption,
+            bool isError = false)
         {
             boardMessage.Active = true;
-            boardMessage.Text = Utf8ToWide(utf8Text);
-            boardMessage.Caption = Utf8ToWide(utf8Caption);
+            boardMessage.Text = text;
+            boardMessage.Caption = caption;
             boardMessage.IsError = isError;
+        };
+        const auto showBoardMessage = [&](const std::string& utf8Text, const std::string& utf8Caption, bool isError = false)
+        {
+            showBoardMessageWide(Utf8ToWide(utf8Text), Utf8ToWide(utf8Caption), isError);
         };
 
         // 苦手練習(15章)を開始する。苦手分野の集計(13章)でもっとも「緩着+悪手」の割合が
@@ -2330,6 +2421,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             bool reviewPrevPressed = renderer.WasKeyPressed(VK_LEFT);
             bool reviewNextPressed = renderer.WasKeyPressed(VK_RIGHT);
             bool newGamePressed = renderer.WasKeyPressed('N');
+            bool undoPressed = renderer.WasKeyPressed('U');
             if (boardMessage.Active)
             {
                 // メッセージ表示中はキーボードショートカットもすべて無効化する(OKボタンでの
@@ -2340,11 +2432,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 reviewPrevPressed = false;
                 reviewNextPressed = false;
                 newGamePressed = false;
+                undoPressed = false;
             }
 
             // 地合い表示・着手ヒントはレート戦では使えない(互角の相手と正味の実力で対局する
             // という趣旨に反するため)。カジュアルでのみキー操作・ボタンの両方を受け付ける
             const bool overlayTogglesAllowed = currentGameMode != GameMode::Ranked;
+
+            // 「待った」(16章)も同じ理由でレート戦では使えない。加えて、直前の1往復
+            // (自分の手+AIの応手)が揃っている場合のみ戻せる(苦手練習の開始局面までは戻さない)
+            const bool undoAllowed = currentGameMode != GameMode::Ranked &&
+                CanUndoLastExchange(moveHistory, humanColor, practiceSetupMoves.size());
 
             if (renderer.WasKeyPressed('T') && !boardMessage.Active && overlayTogglesAllowed)
             {
@@ -2399,6 +2497,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 {
                     buttonSpecs.push_back({ ButtonId::Pass, L"パス", true, false });
                     buttonSpecs.push_back({ ButtonId::Resign, L"投了", true, false });
+                    buttonSpecs.push_back({ ButtonId::Undo, L"待った", undoAllowed, false });
                 }
                 if (turnState == TurnState::GameOver && !lastSavedGamePath.empty())
                 {
@@ -2646,6 +2745,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     case ButtonId::ToggleHint:      hintOverlayEnabled = !hintOverlayEnabled; break;
                     case ButtonId::Pass:            passPressed = true; break;
                     case ButtonId::Resign:          resignPressed = true; break;
+                    case ButtonId::Undo:            undoPressed = true; break;
                     case ButtonId::StartReview:     reviewStartPressed = true; break;
                     case ButtonId::ReviewPrev:      reviewPrevPressed = true; break;
                     case ButtonId::ReviewNext:      reviewNextPressed = true; break;
@@ -2844,7 +2944,44 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 break;
 
             case TurnState::HumanToMove:
-                if (resignPressed)
+                if (undoPressed && undoAllowed)
+                {
+                    // KataGo側の盤面から2手(AIの応手→自分の手の順)取り消す。片方だけ成功した
+                    // 状態でKurenaiGo側の盤面を更新すると両者の局面がずれてしまうため、
+                    // 2回とも成功した場合のみKurenaiGo側を更新する。失敗した場合は他のKataGo
+                    // 通信エラーと同様に対局を終了させる(ずれたまま続行しない)
+                    bool undoSucceeded = true;
+                    try
+                    {
+                        kataGo.Undo();
+                        kataGo.Undo();
+                    }
+                    catch (const std::exception& e)
+                    {
+                        undoSucceeded = false;
+                        std::ofstream log("error.log", std::ios::app);
+                        log << "待ったの取り消し(undo)に失敗しました: " << e.what() << std::endl;
+                        showBoardMessage(std::string("待ったに失敗しました:\n") + e.what(), "KataGoエラー", true);
+                        turnState = TurnState::GameOver;
+                    }
+
+                    if (undoSucceeded)
+                    {
+                        const SgfMove undoneHumanMove = moveHistory[moveHistory.size() - 2];
+                        moveHistory.pop_back(); // AIの応手
+                        moveHistory.pop_back(); // 自分の手
+                        board = ReplayMoves(moveHistory, static_cast<int>(moveHistory.size()), currentBoardSize);
+
+                        showBoardMessageWide(
+                            BuildUndoComparisonText(undoneHumanMove, hasUndoBaseAnalysis, undoBaseAnalysis),
+                            L"待った");
+                        hasUndoBaseAnalysis = false;
+                        // 戻した局面を解析し直してから手番を再開する(勝率表示・着手ヒントを
+                        // 戻した局面のものへ更新するため)
+                        enterHumanToMove();
+                    }
+                }
+                else if (resignPressed)
                 {
                     renderer.PlaySound(gameEndSound);
                     const std::string result = ResignResultString(Opponent(humanColor));
@@ -2858,6 +2995,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 }
                 else if (passPressed)
                 {
+                    // 「待った」(16章)の比較に使うため、着手直前の解析結果を控えておく
+                    undoBaseAnalysis = latestAnalysis;
+                    hasUndoBaseAnalysis = hasAnalysis;
+
                     board.Pass();
                     kataGo.PlayPass(humanColor);
                     moveHistory.push_back({ humanColor, true, -1, -1 });
@@ -2879,6 +3020,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 {
                     if (board.TryPlay(hoverRow, hoverCol, humanColor))
                     {
+                        // 「待った」(16章)の比較に使うため、着手直前の解析結果を控えておく
+                        undoBaseAnalysis = latestAnalysis;
+                        hasUndoBaseAnalysis = hasAnalysis;
+
                         renderer.PlaySound(stonePlaceSound);
                         kataGo.PlayMove(humanColor, hoverRow, hoverCol);
                         moveHistory.push_back({ humanColor, false, hoverRow, hoverCol });

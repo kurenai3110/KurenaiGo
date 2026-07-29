@@ -320,6 +320,11 @@ namespace KurenaiGo
         Exchange(std::string("play ") + ToGtpColorChar(color) + " pass");
     }
 
+    void KataGoClient::Undo()
+    {
+        Exchange("undo");
+    }
+
     void KataGoClient::ResetBoard()
     {
         Exchange("clear_board");
