@@ -1237,6 +1237,7 @@ namespace
         StartReview,
         ReviewPrev,
         ReviewNext,
+        NextMoveQuiz, // 次の一手クイズ(18章)。棋譜再生中、次の手を自分で予想する
         NewGame,
         Quit,
         ChooseBoardSize9,
@@ -1814,6 +1815,56 @@ namespace
         return replayBoard;
     }
 
+    // 次の一手クイズ(18章): 棋譜再生中のmoveIndex手目について、プレイヤーが予想した交点を
+    // その局面の解析結果(棋譜再生開始時に取得済み)と突き合わせた結果の文章を組み立てる。
+    // KataGoへの追加の問い合わせは行わず、候補手の順位・勝率と実戦の手を並べるだけにする。
+    // 勝率はいずれもその局面の手番から見た値(analysis.ColorToMove視点)。
+    // 盤上メッセージのパネル幅(kMessagePanelWidth=460px)に収まるよう、各行は短く保つこと
+    std::wstring BuildNextMoveQuizResult(const SgfGameRecord& record, int moveIndex,
+        const KataGoAnalysisResult& analysis, int guessRow, int guessCol)
+    {
+        std::vector<AnalysisMoveInfo> sortedMoves = analysis.TopMoves;
+        std::sort(sortedMoves.begin(), sortedMoves.end(),
+            [](const AnalysisMoveInfo& a, const AnalysisMoveInfo& b) { return a.Order < b.Order; });
+
+        std::wostringstream text;
+        text << std::fixed << std::setprecision(1);
+        text << L"あなたの予想 " << FormatVertex(guessRow, guessCol);
+
+        int guessRank = -1;
+        float guessWinrate = 0.0f;
+        for (size_t i = 0; i < sortedMoves.size(); ++i)
+        {
+            if (sortedMoves[i].Row == guessRow && sortedMoves[i].Col == guessCol)
+            {
+                guessRank = static_cast<int>(i) + 1;
+                guessWinrate = sortedMoves[i].Winrate;
+                break;
+            }
+        }
+        if (guessRank > 0)
+        {
+            text << L"\nKataGoの第" << guessRank << L"候補(勝率 " << (guessWinrate * 100.0f) << L"%)";
+        }
+        else
+        {
+            // KataGoが報告する候補手は探索した上位のみのため、含まれない手も珍しくない
+            text << L"\nKataGoの候補手には入っていません";
+        }
+
+        if (!sortedMoves.empty() && sortedMoves[0].Row >= 0 && sortedMoves[0].Col >= 0)
+        {
+            text << L"\n最善手 " << FormatVertex(sortedMoves[0].Row, sortedMoves[0].Col)
+                 << L"(勝率 " << (sortedMoves[0].Winrate * 100.0f) << L"%)";
+        }
+
+        const SgfMove& actualMove = record.Moves[static_cast<size_t>(moveIndex)];
+        text << L"\n実戦の手 "
+             << (actualMove.IsPass ? std::wstring(L"パス") : FormatVertex(actualMove.Row, actualMove.Col));
+        text << L"\n(いずれも手番から見た勝率)";
+        return text.str();
+    }
+
     // 詰碁(17章)の判定: targetStonesのすべてがdeadStones(KataGoのfinal_status_list dead)に
     // 含まれているかどうか。1つでも含まれていなければ「取り切れていない」とみなす
     bool AreAllTargetsJudgedDead(const std::vector<std::pair<int, int>>& targetStones,
@@ -2307,6 +2358,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         // 着手ヒントもこのキャッシュのOwnership/TopMovesをそのまま使う
         std::vector<KataGoAnalysisResult> reviewAnalysisCache;
         std::vector<bool> reviewHasCached;
+        // 次の一手クイズ(18章)が出題中かどうか。出題中は着手ヒントを描かず(答えが見えてしまう
+        // ため)、盤の交点をクリックすると予想として判定する。手数を動かすと解除する
+        bool reviewQuizActive = false;
 
         // 解析(kata-analyze)の最新結果。対局中の勝率表示・地合い可視化・着手ヒントが共通で使う
         KataGoAnalysisResult latestAnalysis;
@@ -2714,6 +2768,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     const bool canGoNext = reviewMoveIndex < static_cast<int>(reviewRecord.Moves.size());
                     buttonSpecs.push_back({ ButtonId::ReviewPrev, L"前の手", canGoPrev, false });
                     buttonSpecs.push_back({ ButtonId::ReviewNext, L"次の手", canGoNext, false });
+                    // 次の一手クイズ(18章)は、次の手が存在し、その局面の解析がキャッシュ済みの
+                    // ときだけ出題できる(判定に候補手と勝率が要るため)
+                    const bool canQuiz = canGoNext &&
+                        reviewMoveIndex < static_cast<int>(reviewHasCached.size()) &&
+                        reviewHasCached[static_cast<size_t>(reviewMoveIndex)];
+                    buttonSpecs.push_back({ ButtonId::NextMoveQuiz, L"次の一手", canQuiz, reviewQuizActive });
                 }
                 if (turnState == TurnState::GameOver || turnState == TurnState::Reviewing)
                 {
@@ -3003,6 +3063,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     case ButtonId::StartReview:     reviewStartPressed = true; break;
                     case ButtonId::ReviewPrev:      reviewPrevPressed = true; break;
                     case ButtonId::ReviewNext:      reviewNextPressed = true; break;
+                    case ButtonId::NextMoveQuiz:    reviewQuizActive = !reviewQuizActive; break;
                     case ButtonId::NewGame:         newGamePressed = true; break;
                     case ButtonId::Quit:            renderer.Close(); break;
                     case ButtonId::ShowMistakeStats:
@@ -3552,6 +3613,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     {
                         reviewRecord = ReadSgfFile(lastSavedGamePath);
                         reviewMoveIndex = 0;
+                        reviewQuizActive = false;
                         reviewBoard = GoBoard(reviewRecord.BoardSize);
                         hasAnalysis = false; // 直前の対局の解析結果を棋譜再生画面に持ち越さない
 
@@ -3629,6 +3691,24 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                     // 棋譜再生開始時に全局面を一括解析済み(または対局後解析のキャッシュを
                     // 流用済み)のため、ここではKataGoへ問い合わせず盤面を再計算するのみ
                     reviewBoard = ReplayMoves(reviewRecord.Moves, reviewMoveIndex, reviewRecord.BoardSize);
+                    // 手数が動いたら出題中のクイズは無効にする(別の局面の答えになってしまうため)
+                    reviewQuizActive = false;
+                    break;
+                }
+
+                // 次の一手クイズ(18章)の予想。石の無い交点をクリックすると、その局面の
+                // 解析キャッシュと突き合わせた結果を盤上メッセージで表示する
+                if (reviewQuizActive && clicked && !clickConsumed && isHoveringAnyPoint &&
+                    reviewBoard.At(hoverRow, hoverCol) == Stone::Empty &&
+                    reviewMoveIndex < totalMoves &&
+                    reviewMoveIndex < static_cast<int>(reviewHasCached.size()) &&
+                    reviewHasCached[static_cast<size_t>(reviewMoveIndex)])
+                {
+                    showBoardMessageWide(
+                        BuildNextMoveQuizResult(reviewRecord, reviewMoveIndex,
+                            reviewAnalysisCache[static_cast<size_t>(reviewMoveIndex)], hoverRow, hoverCol),
+                        L"次の一手");
+                    reviewQuizActive = false;
                 }
                 break;
             }
@@ -3683,7 +3763,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             // ときだけ表示するため、マーカーの並びと同じCollectHintMovesの結果で判定する
             std::vector<AnalysisMoveInfo> hintMoves;
             int hoveredHintIndex = -1;
-            if (activeAnalysis != nullptr && hintOverlayEnabled &&
+            // 次の一手クイズ(18章)の出題中は、着手ヒントを出すと答えが見えてしまうため描かない
+            if (activeAnalysis != nullptr && hintOverlayEnabled && !reviewQuizActive &&
                 (turnState == TurnState::HumanToMove || turnState == TurnState::Reviewing))
             {
                 hintMoves = CollectHintMoves(*activeAnalysis);
@@ -3781,8 +3862,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         kTopPanelColorR, kTopPanelColorG, kTopPanelColorB, kTopPanelAlpha,
                         kTopPanelBorderThickness, kTopPanelBorderColorR, kTopPanelBorderColorG, kTopPanelBorderColorB, 1.0f);
 
-                    const std::wstring commentary = BuildMoveCommentary(reviewRecord, reviewMoveIndex,
-                        reviewAnalysisCache, reviewHasCached);
+                    // 次の一手クイズ(18章)の出題中は、着手の言語化コメント(直前の手の評価)の
+                    // 代わりに操作の案内を出す。コメント自体は次の手を明かさないが、この行が
+                    // 出題中の唯一の案内になるため差し替える
+                    const std::wstring commentary = reviewQuizActive
+                        ? std::wstring(L"次の一手クイズ: 次の手だと思う交点をクリックしてください")
+                        : BuildMoveCommentary(reviewRecord, reviewMoveIndex,
+                            reviewAnalysisCache, reviewHasCached);
                     DrawMoveCommentary(renderer, height, commentary);
 
                     // カーソルが損失グラフ上にあれば、その手数に縦線を出してクリックで

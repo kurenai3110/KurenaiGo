@@ -148,7 +148,8 @@
     <li><a href="#practice">15. 苦手練習(途中局面からの対局再開)</a></li>
     <li><a href="#undo">16. 待った(打ち直しと比較)</a></li>
     <li><a href="#tsumego">17. 詰碁(死活の練習)</a></li>
-    <li><a href="#future">18. 今後の課題</a></li>
+    <li><a href="#quiz">18. 次の一手クイズ</a></li>
+    <li><a href="#future">19. 今後の課題</a></li>
   </ol>
 </nav>
 
@@ -1683,8 +1684,50 @@ KataGoは詰碁専用の設定で起動し直します(<code>humanSLProfile</cod
 </p>
 </section>
 
+<section id="quiz">
+<h2>18. 次の一手クイズ</h2>
+<p>
+棋譜再生中に「次の手を自分で予想して、KataGoの候補手と突き合わせる」機能です。
+棋譜再生は開始時に全局面を一括解析してキャッシュしている(9.4節)ため、
+<strong>KataGoへの追加の問い合わせが一切要らない</strong>のがこの機能の実装上の要点で、
+判定は<code>reviewAnalysisCache[reviewMoveIndex]</code>を読むだけで完結します。
+</p>
+<p>
+出題中かどうかは<code>bool reviewQuizActive</code>1つで持ち、専用の<code>TurnState</code>は
+追加していません(盤面の表示・手数の操作は棋譜再生とまったく同じで、変わるのは
+「盤のクリックが着手ではなく予想になる」ことだけのため)。出題は
+<code>ButtonId::NextMoveQuiz</code>のトグルで、次の手が存在し、かつその局面が
+キャッシュ済み(<code>reviewHasCached[reviewMoveIndex]</code>)のときだけ押せます。
+</p>
+<p>
+判定は<code>BuildNextMoveQuizResult</code>が行います。<code>TopMoves</code>を<code>Order</code>昇順に
+並べて予想した座標を探し、見つかれば順位(1始まり)と勝率、見つからなければ
+「候補手には入っていません」を出します。あわせて<code>Order == 0</code>の手と、
+実際に打たれた手(<code>record.Moves[moveIndex]</code>、パスなら「パス」)を並べます。
+勝率はいずれも<code>analysis.ColorToMove</code>視点(=その局面の手番から見た値)です。
+</p>
+<p>
+出題中に気をつける点は次の3つです。
+</p>
+<ul>
+<li><strong>着手ヒントを描かない</strong>: 上位3手のマーカーが出ていると答えがそのまま見えるため、
+<code>reviewQuizActive</code>の間は<code>hintMoves</code>を組み立てない。</li>
+<li><strong>手数が動いたら解除する</strong>: 別の局面の答えを出してしまうため、
+<code>indexChanged</code>(矢印キー・損失グラフのジャンプ)で<code>false</code>に戻す。
+このとき同じフレームで予想の判定に進まないよう<code>break</code>する。</li>
+<li><strong>案内の出し方</strong>: HUDは1行しかなく棋譜再生の情報で埋まっているため、
+出題中は着手の言語化コメント(9.5節、盤上部の帯の上段)を操作の案内に差し替える。
+このコメントは「直前の手の評価」なので次の手は明かさない。</li>
+</ul>
+<p>
+予想のクリック判定には、着手可否と切り離した<code>isHoveringAnyPoint</code>(8.4節で
+読み筋表示のために追加したもの)を使い、空点かどうかは<code>reviewBoard</code>で確認します
+(対局用の<code>board</code>ではなく再生中の盤面を見る必要があるため)。
+</p>
+</section>
+
 <section id="future">
-<h2>18. 今後の課題</h2>
+<h2>19. 今後の課題</h2>
 <ul>
 <li>対局中の動的な強さ変更(現状KataGo起動後に強さを変える確立された方法が無いため、
 11章の実装は対局開始時の1回のみとしている)</li>
