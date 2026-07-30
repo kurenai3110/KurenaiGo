@@ -9,9 +9,10 @@ KurenaiEngineは本リポジトリにGit submoduleとして組み込んでいま
 ## 遊び方
 
 `KurenaiGo.exe` を起動し、盤上に表示されるボタンで盤の大きさ(`9路`/`13路`/`19路`)・対局モード
-(`レート戦`/`カジュアル`/`苦手練習`)を選ぶと、人間 vs KataGoの対局が始まります。手番(黒/白)は
+(`レート戦`/`カジュアル`/`苦手練習`/`詰碁`)を選ぶと、人間 vs KataGoの対局が始まります。手番(黒/白)は
 レート戦ではランダム、カジュアルでは黒/白/ランダムから選べます。`苦手練習`は苦手分野の解析で
-もっとも成績が悪い局面を、直近の棋譜から再現して打ち直すモードです。操作方法・
+もっとも成績が悪い局面を、直近の棋譜から再現して打ち直すモードです。`詰碁`は死活の問題を1手で解き、
+正誤をKataGoに判定させるモードです。操作方法・
 勝率表示・待った・棋譜の保存と再生・レーティング・AIの強さ設定・苦手分野の解析など各機能の詳細は
 [docs/KurenaiGo.html](docs/KurenaiGo.html) を参照してください。
 
@@ -29,11 +30,13 @@ KurenaiGo/
     GoBoard.h/.cpp           囲碁のルール(合法手判定・捕獲・シンプルコウ)
     KataGoClient.h/.cpp      KataGoを子プロセスとして起動しGTPで通信するクライアント
     PathUtil.h/.cpp          exeと同じフォルダにあるファイル/フォルダを解決するヘルパー
-    Sgf.h/.cpp               棋譜(SGF)の書き出し・読み込み
+    Sgf.h/.cpp               棋譜(SGF)の書き出し・読み込み(詰碁の問題図の初期配置も読む)
+    Tsumego.h/.cpp           詰碁(死活)の問題図の読み込みとGTPへの流し込み順の決定
     Rating.h/.cpp            棋力の数値化(レーティング)の計算・rating_history.txtの読み書き
     MistakeStats.h/.cpp      苦手分野の解析(局面ごとの悪手率)の集計・mistake_stats.txtの読み書き
   Assets/
     Sounds/                  着手音・対局終了音(Tools/generate_sound_effects.ps1で生成した合成音)
+    Tsumego/                 詰碁の問題図(SGF。1ファイル=1問。追加も可能)
   Tools/
     generate_sound_effects.ps1  効果音(WAV)の再生成スクリプト
 KurenaiEngine/              描画エンジン(Git submodule)
@@ -43,7 +46,7 @@ Build/
     KurenaiEngineLibrary.dll ビルド後処理でコピーされる(共通基盤)
     KurenaiEngine2D.dll      ビルド後処理でコピーされる(2D描画)
     Shaders/                 ビルド後処理でコピーされるシェーダ一式(KurenaiEngine2D.dllが実行時に参照)
-    Assets/                  ビルド後処理でコピーされる効果音
+    Assets/                  ビルド後処理でコピーされる効果音・詰碁の問題図
     KataGo/                  KataGo本体・ニューラルネット(手動配置。下記セットアップ参照)
     Games/                   対局終了時に自動保存される棋譜(SGF、実行時に生成)
     rating_history.txt       19路レート戦のレーティング推移(実行時に生成・追記)

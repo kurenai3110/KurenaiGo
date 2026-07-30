@@ -33,6 +33,12 @@ namespace KurenaiGo
         // パスする(連続パス数をインクリメントし、コウの制約を解除する)
         void Pass();
 
+        // 初期配置の石を置く(詰碁(17章)の問題図をSGFのAB/AWから復元するために使う)。
+        // 合法手判定・捕獲・コウの更新を一切行わず、指定した交点の状態をそのまま書き換える。
+        // 初期配置は「交互に打った手順」ではないため、TryPlayでは表現できない
+        // (自殺手・同色の連続着手になり得る)。盤外の座標は無視する
+        void PlaceSetupStone(int row, int col, Stone color);
+
         Stone At(int row, int col) const;
         int Size() const { return m_Size; }
         int ConsecutivePasses() const { return m_ConsecutivePasses; }

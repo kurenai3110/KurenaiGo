@@ -31,6 +31,15 @@ namespace KurenaiGo
         return IsOnBoard(row, col) ? m_Cells[Index(row, col)] : Stone::Empty;
     }
 
+    void GoBoard::PlaceSetupStone(int row, int col, Stone color)
+    {
+        if (!IsOnBoard(row, col))
+        {
+            return;
+        }
+        m_Cells[Index(row, col)] = color;
+    }
+
     void GoBoard::CollectGroup(int row, int col, Stone color, std::vector<int>& outGroup, std::vector<int>& outLiberties) const
     {
         outGroup.clear();

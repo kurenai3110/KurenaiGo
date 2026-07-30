@@ -8,6 +8,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "GoBoard.h"
@@ -158,6 +159,13 @@ namespace KurenaiGo
         void RequestFinalScore();
         bool TryGetFinalScore(std::string& outResult);
 
+        // final_status_list deadを別スレッドで要求する。結果はTryGetDeadStonesでポーリングする。
+        // KataGoが「この局面で死んでいる」と判断した石の座標が返る。詰碁(17章)の正誤判定に使う
+        // (ownershipのしきい値と違い、死活の判定がそのまま離散の一覧で得られる)。
+        // 通信に失敗した場合はoutFailedがtrueになり、outStonesは空になる
+        void RequestDeadStones();
+        bool TryGetDeadStones(std::vector<std::pair<int, int>>& outStones, bool& outFailed);
+
         // kata-analyzeによる局面解析を別スレッドで要求する。結果はTryGetAnalysisResultで
         // ポーリングする。対局進行には必須ではない補助情報のため、失敗してもRequestGenMove等の
         // ように対局を止めることはなく、KataGoAnalysisResult::Failedで呼び出し側に通知するのみ。
@@ -226,6 +234,10 @@ namespace KurenaiGo
 
         std::atomic<bool> m_FinalScoreReady { false };
         std::string m_FinalScoreResult;
+
+        std::atomic<bool> m_DeadStonesReady { false };
+        std::vector<std::pair<int, int>> m_DeadStones;
+        bool m_DeadStonesFailed = false;
 
         std::atomic<bool> m_AnalysisReady { false };
         KataGoAnalysisResult m_AnalysisResult;

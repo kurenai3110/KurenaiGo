@@ -289,6 +289,7 @@ namespace KurenaiGo
         m_GenMoveReady.store(false);
         m_FinalScoreReady.store(false);
         m_AnalysisReady.store(false);
+        m_DeadStonesReady.store(false);
 
         m_WorkerThread = std::thread([this, exePath, modelPath, humanModelPath, humanSLProfile,
             configPath, stderrLogPath, boardSize, maxVisits]()
@@ -397,6 +398,60 @@ namespace KurenaiGo
             return false;
         }
         outResult = m_FinalScoreResult;
+        return true;
+    }
+
+    void KataGoClient::RequestDeadStones()
+    {
+        if (m_WorkerThread.joinable())
+        {
+            m_WorkerThread.join();
+        }
+        m_DeadStonesReady.store(false);
+
+        m_WorkerThread = std::thread([this]()
+        {
+            std::vector<std::pair<int, int>> stones;
+            bool failed = false;
+            try
+            {
+                // 応答は空白区切りの頂点表記の並び(1つも無い場合は空文字列)
+                const std::string response = Exchange("final_status_list dead");
+                for (const std::string& token : Tokenize(response))
+                {
+                    int row = -1;
+                    int col = -1;
+                    try
+                    {
+                        ParseNormalVertex(token, row, col);
+                        stones.push_back({ row, col });
+                    }
+                    catch (const std::exception&)
+                    {
+                        // pass等、盤上の頂点として解釈できないトークンは無視する
+                    }
+                }
+            }
+            catch (const std::exception& e)
+            {
+                failed = true;
+                stones.clear();
+                m_LastError = e.what();
+            }
+            m_DeadStones = std::move(stones);
+            m_DeadStonesFailed = failed;
+            m_DeadStonesReady.store(true);
+        });
+    }
+
+    bool KataGoClient::TryGetDeadStones(std::vector<std::pair<int, int>>& outStones, bool& outFailed)
+    {
+        if (!m_DeadStonesReady.load())
+        {
+            return false;
+        }
+        outStones = m_DeadStones;
+        outFailed = m_DeadStonesFailed;
         return true;
     }
 

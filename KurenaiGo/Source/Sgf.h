@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "GoBoard.h"
@@ -18,6 +19,15 @@ namespace KurenaiGo
         int Col = -1;
     };
 
+    // 初期配置の石1個ぶん(SGFのAB/AWプロパティ。詰碁(17章)の問題図で使う)。
+    // 「交互に打った手順」ではないためSgfMoveとは別に扱う
+    struct SgfSetupStone
+    {
+        Stone Color = Stone::Empty;
+        int Row = -1; // KurenaiGoの内部座標(row=0が盤面下端)
+        int Col = -1;
+    };
+
     // 1局ぶんの記録(分岐の無い単一手順のみを扱う、SGFの最小限のサブセット)
     struct SgfGameRecord
     {
@@ -25,6 +35,15 @@ namespace KurenaiGo
         float Komi = kKomi;
         std::string Result; // 例: "B+3.5"、"W+R"。空なら不明
         std::vector<SgfMove> Moves;
+
+        // 以下は詰碁(17章)の問題図を記述するために読み取るプロパティ。
+        // KurenaiGo自身が書き出す対局の棋譜では常に空/既定値のままになる
+        std::vector<SgfSetupStone> SetupStones; // AB/AWによる初期配置(順序はSGFの記載順)
+        Stone PlayerToMove = Stone::Empty;      // PL。記載が無ければEmpty
+        std::string GameName;                   // GN(UTF-8)
+        std::string Comment;                    // C(UTF-8)
+        // SQ(四角マーク)で指定された交点。詰碁では「生死を判定する対象の石」を指す
+        std::vector<std::pair<int, int>> MarkedPoints;
     };
 
     // SgfGameRecordをSGF(Smart Game Format)のテキストへ書き出す

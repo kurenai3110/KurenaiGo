@@ -174,6 +174,62 @@ namespace KurenaiGo
                     }
                     record.Moves.push_back(move);
                 }
+                else if (ident == "AB" || ident == "AW")
+                {
+                    // 初期配置(詰碁の問題図、17章)。1つのプロパティに複数の座標が並ぶ
+                    const Stone color = (ident == "AB") ? Stone::Black : Stone::White;
+                    for (const std::string& value : values)
+                    {
+                        if (value.empty())
+                        {
+                            continue; // 空の値は座標として意味を持たないため無視する
+                        }
+                        SgfSetupStone stone;
+                        stone.Color = color;
+                        FromSgfPoint(value, record.BoardSize, stone.Row, stone.Col);
+                        record.SetupStones.push_back(stone);
+                    }
+                }
+                else if (ident == "SQ")
+                {
+                    // 詰碁(17章)で生死を判定する対象の石を指す四角マーク。1つのプロパティに
+                    // 複数の座標が並ぶ
+                    for (const std::string& value : values)
+                    {
+                        if (value.empty())
+                        {
+                            continue;
+                        }
+                        int row = -1;
+                        int col = -1;
+                        FromSgfPoint(value, record.BoardSize, row, col);
+                        record.MarkedPoints.push_back({ row, col });
+                    }
+                }
+                else if (ident == "PL")
+                {
+                    // 手番。SGFでは"B"/"W"(小文字も許容される)
+                    if (!values[0].empty())
+                    {
+                        const char c = static_cast<char>(std::toupper(static_cast<unsigned char>(values[0][0])));
+                        if (c == 'B')
+                        {
+                            record.PlayerToMove = Stone::Black;
+                        }
+                        else if (c == 'W')
+                        {
+                            record.PlayerToMove = Stone::White;
+                        }
+                    }
+                }
+                else if (ident == "GN")
+                {
+                    record.GameName = values[0];
+                }
+                else if (ident == "C")
+                {
+                    record.Comment = values[0];
+                }
                 // GM/FF/PB/PW等、上記以外のプロパティは読み飛ばす(対局進行には不要)
 
                 SkipWhitespace(sgfText, pos);

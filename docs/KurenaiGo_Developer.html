@@ -147,7 +147,8 @@
     <li><a href="#turn-color">14. 手番(黒/白)の選択</a></li>
     <li><a href="#practice">15. 苦手練習(途中局面からの対局再開)</a></li>
     <li><a href="#undo">16. 待った(打ち直しと比較)</a></li>
-    <li><a href="#future">17. 今後の課題</a></li>
+    <li><a href="#tsumego">17. 詰碁(死活の練習)</a></li>
+    <li><a href="#future">18. 今後の課題</a></li>
   </ol>
 </nav>
 
@@ -1549,8 +1550,141 @@ UTF-8版はそれを呼ぶだけにしています。盤上メッセージのパ
 </p>
 </section>
 
+<section id="tsumego">
+<h2>17. 詰碁(死活の練習)</h2>
+<p>
+死活の問題を1手で解き、その正誤をKataGoに判定させるモードです
+(<code>GameMode::Tsumego</code>)。実装上の要点は「問題図をどう持つか」「KataGo側の盤面をどう
+作るか」「正誤をどう判定するか」の3つで、とくに3つ目は<strong>実機検証の結果で方式を2回
+差し替えている</strong>ため、その経緯も残します。
+</p>
+<h3>17.1 問題図の持ち方(SGFの初期配置)</h3>
+<p>
+問題は<code>Assets\Tsumego\</code>の<code>*.sgf</code>(1ファイル=1問)として持ちます。
+アプリ側に「正解の手順」を書かないため、ファイルには局面と説明文だけがあります。
+これまでのSGFパーサ(9章)は自分が書き出した棋譜(<code>B</code>/<code>W</code>の手順)しか
+読めなかったので、次のプロパティを追加で読むようにしました。
+</p>
+<table>
+<thead><tr><th>プロパティ</th><th><code>SgfGameRecord</code>のメンバ</th><th>用途</th></tr></thead>
+<tbody>
+<tr><td><code>AB</code> / <code>AW</code></td><td><code>SetupStones</code></td><td>初期配置。「交互に打った手順」ではないため<code>SgfMove</code>とは別の<code>SgfSetupStone</code>で持つ</td></tr>
+<tr><td><code>SQ</code></td><td><code>MarkedPoints</code></td><td>生死を判定する対象の白石(下記17.4の理由で必要)</td></tr>
+<tr><td><code>PL</code></td><td><code>PlayerToMove</code></td><td>手番。<code>PL[B]</code>(黒先)の問題のみ採用する</td></tr>
+<tr><td><code>GN</code> / <code>C</code></td><td><code>GameName</code> / <code>Comment</code></td><td>問題名(一覧のボタン)と問題文(開始時の盤上メッセージ)</td></tr>
+</tbody>
+</table>
+<p>
+座標の変換は既存の<code>FromSgfPoint</code>を使うため<code>SZ</code>が既知である必要があり、
+<strong><code>SZ</code>は<code>AB</code>/<code>AW</code>/<code>SQ</code>より前に書く</strong>という
+制約があります(SGFの慣習どおりルートノードの先頭に置けば問題ありません)。
+</p>
+<p>
+KurenaiGo側の盤面は<code>GoBoard::PlaceSetupStone</code>で作ります。合法手判定・捕獲・コウの更新を
+一切行わず指定した交点を書き換えるだけの関数で、<code>TryPlay</code>では表現できない初期配置
+(自殺手・同色の連続着手になり得る)を置くために追加しました。
+</p>
+<h3>17.2 KataGo側の盤面を問題図に合わせる</h3>
+<p>
+KataGoのGTPには初期配置をまとめて渡すコマンドを使っていないため、<code>play</code>を1手ずつ
+送って問題図を再現します。ここで問題になるのが<strong>順序</strong>です。<code>play</code>は
+通常の着手として扱われるので、置いた瞬間に呼吸点が0になる石があると相手の石を取ってしまい、
+問題図が壊れます。
+</p>
+<p>
+<code>TryOrderSetupStonesForGtp</code>は「置いた時点で自分の連も隣接する相手の連も呼吸点が
+1つ以上ある」石を選び続ける貪欲法で順序を決めます。呼吸点の数え上げには、捕獲やコウを持たない
+単純な格子(<code>Tsumego.cpp</code>内の<code>PlainBoard</code>)の上でのフラッドフィルを使います
+(<code>GoBoard</code>のルール判定は不要で、むしろ邪魔になるため)。どう並べても成立しない
+問題図は<code>LoadTsumegoProblems</code>の時点で読み飛ばすので、対局開始時にKataGo側の盤面だけが
+壊れることはありません。
+</p>
+<h3>17.3 正誤判定: ownershipから<code>final_status_list</code>へ</h3>
+<p>
+最初は着手後の局面を<code>kata-analyze</code>で解析し、対象の交点の<code>ownership</code>
+(黒視点の平均)がしきい値(±0.5)を超えたかで判定していました。実機で「直三を殺す」を
+試すと、急所に打った場合は<strong>0.99</strong>、外した場合は<strong>0.14</strong>と値自体は
+分かれたのですが、0.14は「死とも生とも言えない」域で、<strong>不正解をはっきり不正解と
+言えない</strong>という結果になりました。
+</p>
+<p>
+そこでGTPを直接叩いて調べたところ、<code>final_status_list dead</code>(KataGoがその局面で
+死んでいると判断した石の一覧)が非常にきれいに分かれることが分かりました。
+</p>
+<table>
+<thead><tr><th>局面</th><th><code>final_status_list dead</code></th></tr></thead>
+<tbody>
+<tr><td>問題図(黒番)</td><td>白の対象5子</td></tr>
+<tr><td>急所B1に打った後</td><td>白の対象5子</td></tr>
+<tr><td>A1(誤答)に打った後</td><td>A1(打った黒石だけ)</td></tr>
+<tr><td>C1(誤答)に打った後</td><td>C1(打った黒石だけ)</td></tr>
+</tbody>
+</table>
+<p>
+このためownershipのしきい値判定を捨て、<code>KataGoClient::RequestDeadStones</code> /
+<code>TryGetDeadStones</code>(<code>final_status_list dead</code>を別スレッドで実行し、
+頂点表記を<code>ParseNormalVertex</code>で座標に直して返す)を追加し、
+<code>AreAllTargetsJudgedDead</code>で「対象の白石がすべて死の一覧に含まれるか」を見る方式に
+変えました。しきい値が不要で、判定が離散になるのが利点です。
+</p>
+<p>
+なお「対象の白石が実際に盤上から消えた」場合(<code>AreTargetStonesCaptured</code>)は
+KataGoに問い合わせるまでもなく正解なので、そちらを先に見る早い経路として残しています。
+</p>
+<h3>17.4 問題図は盤全体が互角でなければならない</h3>
+<p>
+判定方式を変える前に、もう1つ大きな失敗をしています。最初に作った問題図は、隅の死活形の周りに
+最小限の黒石を置いただけのものでした。この形をGTPで調べると、黒が急所に打った直後に白が
+<strong>隅ではなく外から黒の囲みを攻める手</strong>(<code>C4</code>など)を選び、囲みの黒石が
+死んで白の隅が助かる、という進行になっていました(<code>genmove</code>を繰り返して確認)。
+つまり囲みの黒石自体が弱く、死活問題として成立していませんでした。
+</p>
+<p>
+次に囲みを厚くしたところ、こんどは<strong>黒が大差で勝つ局面</strong>になってしまい、
+白は隅を守らずにどこでも投了し、<code>final_status_list dead</code>も
+「誤答の後なのに白が死んでいる」と返すようになりました。形勢が一方に大きく傾いた局面では
+KataGoが細かい死活を詰めなくなるためです。
+</p>
+<p>
+最終的に、<strong>盤を左右に分けて黒白それぞれに確定地を持たせ、全体の形勢をおよそ互角にする</strong>
+構成にしたところ、上の表のとおり正誤がきれいに分かれるようになりました。同梱の2問は9路盤で、
+E列に黒の壁・F列に白の壁を立てて左右を分け、左下の隅に白の死活形を置いています。
+この構成では白の壁(9子)も<code>AW</code>に含まれるため、生死の判定対象を<code>SQ</code>で
+隅の5子だけに絞る必要があります(17.1の<code>SQ</code>を追加した理由)。
+</p>
+<p>
+また、問題図を開いた直後(<code>TurnState::TsumegoPreparing</code>)にも
+<code>final_status_list dead</code>を1回実行し、その時点で対象の白石がすべて死と判定されるか
+——つまり<strong>その問題図が本当に「黒先で取れる」形になっているか</strong>——を確認します。
+なっていない場合は<code>error.log</code>へ記録し、盤上メッセージでも断りを入れてから始めます
+(ユーザーが自分で追加した問題図が成立していない場合にも効きます)。
+</p>
+<h3>17.5 状態遷移とUI</h3>
+<p>
+<code>TurnState</code>に<code>ChoosingTsumegoProblem</code>(問題選択)・
+<code>TsumegoPreparing</code>(問題図の確認中)・<code>TsumegoToMove</code>(1手待ち)・
+<code>TsumegoJudging</code>(判定中)・<code>TsumegoResult</code>(結果表示)を追加しました。
+問題選択は盤サイズ・対局モード選択と同じ<code>LayoutBoardCenteredColumn</code>で問題名を
+縦一列に並べ、盤の格子の内側に収まる<code>kMaxTsumegoProblemsShown</code>(6問)までを表示します。
+</p>
+<p>
+KataGoは詰碁専用の設定で起動し直します(<code>humanSLProfile</code>を空にしてHuman SLモデルを
+使わず、<code>maxVisits</code>は<code>kTsumegoMaxVisits</code>)。詰碁で必要なのは
+「人間らしい弱さ」ではなく正しい死活判断だからです。「やり直す」はKataGoを起動し直さず、
+<code>Undo()</code>1回と<code>resetTsumegoBoard</code>で問題図へ戻します。
+</p>
+<p>
+通常の対局ではないため、棋譜の保存・レーティング更新は行わず(<code>FinalizeGameResult</code>を
+呼ばない)、<code>lastSavedGamePath</code>も空にして前の対局の棋譜再生へ誤って入らないように
+します。地合い表示・着手ヒント・待ったは答えが見えてしまうため、
+<code>overlayTogglesAllowed</code>の条件を「レート戦以外」から
+「カジュアルまたは苦手練習」に変えて詰碁でも無効にしました。HUDはレーティング・AI強さ・アゲハマを
+出さず、問題名と進行状況だけを表示します(<code>BuildStatusText</code>の先頭で分岐)。
+</p>
+</section>
+
 <section id="future">
-<h2>17. 今後の課題</h2>
+<h2>18. 今後の課題</h2>
 <ul>
 <li>対局中の動的な強さ変更(現状KataGo起動後に強さを変える確立された方法が無いため、
 11章の実装は対局開始時の1回のみとしている)</li>
@@ -1569,6 +1703,11 @@ UTF-8版はそれを呼ぶだけにしています。盤上メッセージのパ
 判定(9.5節)に加えて、その手が「地を囲う手」「相手の石を攻める手」等、意図・役割まで
 言語化する。優先度は低い)</li>
 <li>ハンディキャップ対局(置き石。手番の選択自体は14章で実装済み)</li>
+<li>詰碁(17章)の複数手にわたる問題・「生きる」側の問題(現状は「黒先で白を取る」1手のみ。
+複数手にすると白の応手を打たせる必要があり、開いた盤面ではKataGoが隅以外に打ってしまうため
+問題図の作り方から再検討が必要)</li>
+<li>詰碁の問題図を増やす(現状は直三・曲がり三の2問。17.4のとおり盤全体が互角になるよう
+作る必要があり、1問ごとにKataGoでの検証が要る)</li>
 <li>過去の複数対局から選んで読み込む機能(現状は直前の対局のみ)</li>
 </ul>
 </section>
