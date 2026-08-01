@@ -83,14 +83,18 @@ namespace KurenaiGo
         return out.str();
     }
 
-    SgfGameRecord ReadSgf(const std::string& sgfText)
+    namespace
     {
+        // SGFの局(ゲームツリー)を1つ読む。posは'('を指した状態で呼び、戻ったときposは
+        // 対応する')'の次を指す。1つのファイルに複数の局を並べたSGFコレクション
+        // (詰碁の問題集、17章)を先頭から順に読めるようにするための分割点
+        SgfGameRecord ReadSgfTree(const std::string& sgfText, size_t& pos)
+        {
         // 本実装は分岐(variation)の無い単一手順のみを扱う最小限のSGFパーサ。
         // 自分自身が書き出したSGFを読み戻せることを目的とする(docs/KurenaiGo_Developer.html参照)
         SgfGameRecord record;
 
-        size_t pos = sgfText.find('(');
-        if (pos == std::string::npos)
+        if (pos >= sgfText.size() || sgfText[pos] != '(')
         {
             throw std::runtime_error("SGFの開始'('が見つかりませんでした");
         }
@@ -99,8 +103,13 @@ namespace KurenaiGo
         for (;;)
         {
             SkipWhitespace(sgfText, pos);
-            if (pos >= sgfText.size() || sgfText[pos] == ')')
+            if (pos >= sgfText.size())
             {
+                break;
+            }
+            if (sgfText[pos] == ')')
+            {
+                ++pos; // 次の局を読めるよう、対応する')'まで消費する
                 break;
             }
             if (sgfText[pos] != ';')
@@ -222,6 +231,19 @@ namespace KurenaiGo
                         }
                     }
                 }
+                else if (ident == "LV")
+                {
+                    // 詰碁の難易度(KurenaiGo独自の拡張、SgfGameRecord::Difficulty参照)。
+                    // 数値として読めない値は難易度の指定なし(0)のまま扱う
+                    try
+                    {
+                        record.Difficulty = std::stoi(values[0]);
+                    }
+                    catch (const std::exception&)
+                    {
+                        record.Difficulty = 0;
+                    }
+                }
                 else if (ident == "GN")
                 {
                     record.GameName = values[0];
@@ -237,6 +259,39 @@ namespace KurenaiGo
         }
 
         return record;
+        }
+    }
+
+    SgfGameRecord ReadSgf(const std::string& sgfText)
+    {
+        size_t pos = sgfText.find('(');
+        if (pos == std::string::npos)
+        {
+            throw std::runtime_error("SGFの開始'('が見つかりませんでした");
+        }
+        return ReadSgfTree(sgfText, pos);
+    }
+
+    std::vector<SgfGameRecord> ReadSgfCollection(const std::string& sgfText)
+    {
+        // SGFコレクション: 1つのファイルに "(;...)(;...)" と局を並べた形式(SGFの標準)。
+        // 局が1つだけのファイルもそのまま読める
+        std::vector<SgfGameRecord> records;
+        size_t pos = 0;
+        for (;;)
+        {
+            pos = sgfText.find('(', pos);
+            if (pos == std::string::npos)
+            {
+                break;
+            }
+            records.push_back(ReadSgfTree(sgfText, pos));
+        }
+        if (records.empty())
+        {
+            throw std::runtime_error("SGFの開始'('が見つかりませんでした");
+        }
+        return records;
     }
 
     void WriteSgfFile(const std::filesystem::path& path, const SgfGameRecord& record)
@@ -254,15 +309,28 @@ namespace KurenaiGo
         }
     }
 
+    namespace
+    {
+        std::string ReadWholeFile(const std::filesystem::path& path)
+        {
+            std::ifstream file(path, std::ios::binary);
+            if (!file)
+            {
+                throw std::runtime_error("SGFファイルを開けませんでした: " + path.string());
+            }
+            std::ostringstream buffer;
+            buffer << file.rdbuf();
+            return buffer.str();
+        }
+    }
+
     SgfGameRecord ReadSgfFile(const std::filesystem::path& path)
     {
-        std::ifstream file(path, std::ios::binary);
-        if (!file)
-        {
-            throw std::runtime_error("SGFファイルを開けませんでした: " + path.string());
-        }
-        std::ostringstream buffer;
-        buffer << file.rdbuf();
-        return ReadSgf(buffer.str());
+        return ReadSgf(ReadWholeFile(path));
+    }
+
+    std::vector<SgfGameRecord> ReadSgfCollectionFile(const std::filesystem::path& path)
+    {
+        return ReadSgfCollection(ReadWholeFile(path));
     }
 }

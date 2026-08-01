@@ -44,18 +44,31 @@ namespace KurenaiGo
         std::string Comment;                    // C(UTF-8)
         // SQ(四角マーク)で指定された交点。詰碁では「生死を判定する対象の石」を指す
         std::vector<std::pair<int, int>> MarkedPoints;
+        // LV。詰碁の難易度(1が最もやさしい)。SGFの標準プロパティではなくKurenaiGo独自の
+        // 拡張で、記載が無ければ0(難易度の指定なし)。他のSGFソフトは未知のプロパティとして
+        // 読み飛ばすため、問題図ファイルの互換性は保たれる
+        int Difficulty = 0;
     };
 
     // SgfGameRecordをSGF(Smart Game Format)のテキストへ書き出す
     std::string WriteSgf(const SgfGameRecord& record);
 
     // SGFのテキストを解析してSgfGameRecordへ変換する。分岐や本実装が対応していない構造を
-    // 含む場合、あるいは構文が壊れている場合はstd::runtime_errorを投げる
+    // 含む場合、あるいは構文が壊れている場合はstd::runtime_errorを投げる。
+    // 複数の局が並んでいる場合は先頭の1局だけを返す
     SgfGameRecord ReadSgf(const std::string& sgfText);
+
+    // SGFコレクション("(;...)(;...)"と局を並べた形式)を解析してすべての局を返す。
+    // 詰碁の問題集(17章)は290問を1ファイルにまとめているためこちらで読む。
+    // 局が1つだけのテキストでも同じように読める(要素数1の配列を返す)
+    std::vector<SgfGameRecord> ReadSgfCollection(const std::string& sgfText);
 
     // SgfGameRecordをUTF-8のSGFファイルとして書き出す(失敗時はstd::runtime_error)
     void WriteSgfFile(const std::filesystem::path& path, const SgfGameRecord& record);
 
     // UTF-8のSGFファイルを読み込みSgfGameRecordへ変換する(失敗時はstd::runtime_error)
     SgfGameRecord ReadSgfFile(const std::filesystem::path& path);
+
+    // UTF-8のSGFファイルを読み込み、含まれるすべての局を返す(失敗時はstd::runtime_error)
+    std::vector<SgfGameRecord> ReadSgfCollectionFile(const std::filesystem::path& path);
 }
