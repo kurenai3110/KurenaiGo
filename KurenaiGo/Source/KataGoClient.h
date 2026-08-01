@@ -170,7 +170,11 @@ namespace KurenaiGo
         // ポーリングする。対局進行には必須ではない補助情報のため、失敗してもRequestGenMove等の
         // ように対局を止めることはなく、KataGoAnalysisResult::Failedで呼び出し側に通知するのみ。
         // budgetは対局中のライブ解析を想定した既定値(kLiveAnalysisBudget)
-        void RequestAnalysis(Stone colorToMove, const AnalysisBudget& budget = kLiveAnalysisBudget);
+        // allowedMovesを渡すと、候補手をその交点だけに絞って解析させる
+        // (kata-analyzeの allow オプション)。詰碁の複数手詰め(17.6節)で、白に
+        // 「問題の区域の中で最善の応手」を必ず打たせるために使う。空なら制限しない
+        void RequestAnalysis(Stone colorToMove, const AnalysisBudget& budget = kLiveAnalysisBudget,
+            const std::vector<std::pair<int, int>>& allowedMoves = {});
         bool TryGetAnalysisResult(KataGoAnalysisResult& outResult);
 
         // moves全体を0手目から末尾まで順に解析する。順方向にしか進まないためclear_boardは
@@ -206,7 +210,8 @@ namespace KurenaiGo
 
         // kata-analyzeを送信し、budgetの条件を満たすまでストリーミング報告を受け取ってから停止し、
         // 最後に受け取った報告をパースして返す(詳細はKataGoClient.cpp冒頭のコメント参照)
-        KataGoAnalysisResult ExchangeAnalyze(Stone colorToMove, const AnalysisBudget& budget);
+        KataGoAnalysisResult ExchangeAnalyze(Stone colorToMove, const AnalysisBudget& budget,
+            const std::vector<std::pair<int, int>>& allowedMoves = {});
         // kata-analyzeの1報告行("info move ... info move ... ownership ...")をパースする
         static void ParseAnalysisLine(const std::string& line, KataGoAnalysisResult& outResult);
 

@@ -455,7 +455,8 @@ namespace KurenaiGo
         return true;
     }
 
-    void KataGoClient::RequestAnalysis(Stone colorToMove, const AnalysisBudget& budget)
+    void KataGoClient::RequestAnalysis(Stone colorToMove, const AnalysisBudget& budget,
+        const std::vector<std::pair<int, int>>& allowedMoves)
     {
         if (m_WorkerThread.joinable())
         {
@@ -463,13 +464,13 @@ namespace KurenaiGo
         }
         m_AnalysisReady.store(false);
 
-        m_WorkerThread = std::thread([this, colorToMove, budget]()
+        m_WorkerThread = std::thread([this, colorToMove, budget, allowedMoves]()
         {
             KataGoAnalysisResult result;
             result.ColorToMove = colorToMove;
             try
             {
-                result = ExchangeAnalyze(colorToMove, budget);
+                result = ExchangeAnalyze(colorToMove, budget, allowedMoves);
             }
             catch (const std::exception& e)
             {
@@ -703,7 +704,8 @@ namespace KurenaiGo
         }
     }
 
-    KataGoAnalysisResult KataGoClient::ExchangeAnalyze(Stone colorToMove, const AnalysisBudget& budget)
+    KataGoAnalysisResult KataGoClient::ExchangeAnalyze(Stone colorToMove, const AnalysisBudget& budget,
+        const std::vector<std::pair<int, int>>& allowedMoves)
     {
         // kata-analyzeはGTPの即時応答を返さず、代わりに"info move ... ownership ..."という
         // 1行の報告を定期的に送り続ける(1行が更新のたびに丸ごと再送される)。
@@ -729,8 +731,23 @@ namespace KurenaiGo
         // この解析のやり取り全体(送信〜終端行を読むまで)を通してロックを保持する
         std::lock_guard<std::mutex> lock(m_IoMutex);
 
-        const std::string command = std::string("kata-analyze ") + ToGtpColorChar(colorToMove) +
+        std::string command = std::string("kata-analyze ") + ToGtpColorChar(colorToMove) +
             " interval 2 ownership true";
+        if (!allowedMoves.empty())
+        {
+            // allow <色> <頂点をカンマ区切り> <深さ>。深さ1は「その色の次の1手だけを
+            // この交点に限る」意味で、以降の読みは制限しない(実測でこの書式を確認済み)
+            command += std::string(" allow ") + ToGtpColorChar(colorToMove) + " ";
+            for (size_t i = 0; i < allowedMoves.size(); ++i)
+            {
+                if (i > 0)
+                {
+                    command += ",";
+                }
+                command += ToVertex(allowedMoves[i].first, allowedMoves[i].second);
+            }
+            command += " 1";
+        }
         SendCommand(command);
 
         const DWORD startTick = GetTickCount();

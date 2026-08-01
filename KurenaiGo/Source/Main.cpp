@@ -769,8 +769,9 @@ namespace
     // 詰碁でKataGoを起動するときのmaxVisits。詰碁では「人間らしい弱さ」ではなく正しい死活判断が
     // 必要なため、Human SLモデル(11.6節)を使わず本来の強さで読ませる
     constexpr int kTsumegoMaxVisits = 800;
-    // 問題選択画面に縦一列で並べられる問題数の上限(盤の格子の内側に収まる個数)
-    constexpr int kMaxTsumegoProblemsShown = 6;
+    // 問題選択画面に縦一列で並べられる問題数(盤の格子の内側に収まる個数)。
+    // 問題はこの数ずつのページに分けて表示し、右側の「前/次のページ」で切り替える
+    constexpr int kTsumegoProblemsPerPage = 6;
 
     // 対局の進行状態
     enum class TurnState
@@ -780,9 +781,10 @@ namespace
         ChoosingGameMode,       // レート戦/カジュアルのボタン選択待ち(対局開始前)
         ChoosingCasualStrength, // (カジュアル選択時のみ)AIの強さの段階選択待ち
         ChoosingCasualColor,    // (カジュアル選択時のみ、強さ確定後)手番(黒/白/ランダム)の選択待ち
+        ChoosingTsumegoRank,    // (詰碁選択時のみ)難易度(段級位)の選択待ち(17章)
         ChoosingTsumegoProblem, // (詰碁選択時のみ)問題の選択待ち(17章)
         TsumegoPreparing,       // 詰碁: 問題図(黒番)をKataGoが解析中(判定の基準値を取る)
-        TsumegoToMove,          // 詰碁: 1手だけ着手する待ち
+        TsumegoToMove,          // 詰碁: 着手する待ち(1手詰めなら1手、複数手詰めなら打ち継ぐ)
         TsumegoJudging,         // 詰碁: 着手後の局面をKataGoが解析中(判定待ち)
         TsumegoResult,          // 詰碁: 判定結果の表示中(やり直す/問題を選ぶ)
         EngineStarting, // KataGo起動中(強さ・手番確定後に起動するため、対局開始のたびに発生する)
@@ -1123,9 +1125,9 @@ namespace
     {
         // 詰碁(17章)は通常の対局ではないため、レーティング・AI強さ・アゲハマといった対局用の
         // 情報は出さず、呼び出し側が組み立てた問題名・進行状況をそのまま表示する
-        if (turnState == TurnState::ChoosingTsumegoProblem || turnState == TurnState::TsumegoPreparing ||
-            turnState == TurnState::TsumegoToMove || turnState == TurnState::TsumegoJudging ||
-            turnState == TurnState::TsumegoResult)
+        if (turnState == TurnState::ChoosingTsumegoRank || turnState == TurnState::ChoosingTsumegoProblem ||
+            turnState == TurnState::TsumegoPreparing || turnState == TurnState::TsumegoToMove ||
+            turnState == TurnState::TsumegoJudging || turnState == TurnState::TsumegoResult)
         {
             return tsumegoStatus;
         }
@@ -1249,6 +1251,10 @@ namespace
         ChooseTsumego,  // 詰碁(17章)
         TsumegoRetry,      // 詰碁: 同じ問題を最初からやり直す
         TsumegoBackToList, // 詰碁: 問題の選択へ戻る
+        TsumegoNextProblem, // 詰碁: 次の問題へ進む(判定後、一覧へ戻らずに続けて解くため)
+        TsumegoPrevPage,   // 詰碁: 問題一覧の前のページ
+        TsumegoNextPage,   // 詰碁: 問題一覧の次のページ
+        BackToTsumegoRank, // 詰碁: 難易度(段級位)の選択へ戻る
         // カジュアル対局の強さ選択(盤上のタブ+5列2行グリッド、11.6節)。CasualGroup*は
         // タブ切替(0=20〜11級/1=10〜1級/2=1〜9段)、CasualRankSlot*はグリッド内の
         // 10マス分(1〜9段タブはスロット9を使わない)
@@ -2273,10 +2279,47 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
         }
         // 選択中の詰碁の問題(tsumegoProblemsの添字)。未選択なら-1
         int currentTsumegoIndex = -1;
+        // 問題選択画面で表示中のページ(0始まり)。問題はkTsumegoProblemsPerPage個ずつ並べる
+        int tsumegoPageIndex = 0;
+        // 詰碁の難易度選択で表示しているタブ(0=20〜11級/1=10〜1級/2=1〜9段)と、
+        // 選んでいる段級位(段級位インデックス。DisplayRankTextForRankIndexと同じ体系)。
+        // 問題のDifficulty(SGFのLV)はこの段級位インデックスをそのまま持つ
+        int tsumegoRankGroup = 0;
+        int tsumegoRankIndex = kHumanSLMinRankIndex;
+        // いま選んでいる段級位に属する問題のtsumegoProblems上の添字。段級位を選び直したときに
+        // 作り直す(問題ファイルは起動時にしか読まないため、毎フレーム作り直す必要はない)
+        std::vector<int> tsumegoLevelIndices;
+        const auto rebuildTsumegoLevelIndices = [&]()
+        {
+            tsumegoLevelIndices.clear();
+            for (size_t i = 0; i < tsumegoProblems.size(); ++i)
+            {
+                if (tsumegoProblems[i].Difficulty == tsumegoRankIndex)
+                {
+                    tsumegoLevelIndices.push_back(static_cast<int>(i));
+                }
+            }
+            tsumegoPageIndex = 0;
+        };
+        // 段級位ごとの問題数(難易度選択のグリッドで、問題がある段だけ押せるようにする)
+        const auto tsumegoProblemCountForRank = [&](int rankIndex)
+        {
+            int count = 0;
+            for (const TsumegoProblem& problem : tsumegoProblems)
+            {
+                if (problem.Difficulty == rankIndex)
+                {
+                    ++count;
+                }
+            }
+            return count;
+        };
         // 問題図をKataGoへまだ流し込んでいない間だけtrue(EngineStarting完了時に消費する)
         bool tsumegoSetupPending = false;
         // 詰碁の判定結果(TsumegoResultで表示する本文)。判定前は空
         std::wstring tsumegoResultText;
+        // いまの問題で黒が打った手数(正解手順の何手目まで進んだか。17.6節)
+        int tsumegoBlackMoveCount = 0;
         // 問題図(黒番)の時点でKataGoが対象の白石を死と判断しているかどうか。問題を開始した
         // 直後に一度だけ確認する(「やり直す」では確認し直さない=問題図は変わらないため)。
         // falseの場合はその問題図がそもそも「黒先で取れる」形になっていない可能性があるため、
@@ -2562,6 +2605,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             }
             moveHistory.clear();
             tsumegoResultText.clear();
+            tsumegoBlackMoveCount = 0;
         };
 
         // 詰碁(17章)を開始する。問題図の盤の大きさに合わせてKataGoを起動し直す。
@@ -2586,16 +2630,27 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             // 地合い表示・着手ヒントは答えが見えてしまうので、詰碁では必ずOFFに戻す
             territoryOverlayEnabled = false;
             hintOverlayEnabled = false;
-            tsumegoSetupPending = true;
-
-            kataGo.StartAsync(
-                kataGoDir / L"katago.exe",
-                kataGoDir / L"model.bin.gz",
-                humanModelPath, std::string(), // humanSLProfileを空にして本来の強さで起動する
-                kataGoDir / L"gtp.cfg",
-                kataGoDir / L"katago_stderr.log",
-                currentBoardSize, kTsumegoMaxVisits);
-            turnState = TurnState::EngineStarting;
+            // 正解手順を持つ問題(同梱の問題図。17.6節)は、正誤の判定も白の応手も手順だけで
+            // 決まるためKataGoを一切使わない。起動を待たずにすぐ解き始められる。
+            // 手順を持たない問題図(利用者が自分で追加したもの)だけKataGoを起動して
+            // 死活判定にかける
+            if (!problem.Solution.empty())
+            {
+                tsumegoSetupPending = false;
+                turnState = TurnState::TsumegoToMove;
+            }
+            else
+            {
+                tsumegoSetupPending = true;
+                kataGo.StartAsync(
+                    kataGoDir / L"katago.exe",
+                    kataGoDir / L"model.bin.gz",
+                    humanModelPath, std::string(), // humanSLProfileを空にして本来の強さで起動する
+                    kataGoDir / L"gtp.cfg",
+                    kataGoDir / L"katago_stderr.log",
+                    currentBoardSize, kTsumegoMaxVisits);
+                turnState = TurnState::EngineStarting;
+            }
 
             // 問題文は長いためHUDには載せず、開始時に盤上メッセージで一度だけ提示する
             std::string message = problem.Description;
@@ -2728,18 +2783,36 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             // Quitボタンのみ以下で共通追加される
             else if (turnState == TurnState::ChoosingBoardSize || turnState == TurnState::ChoosingGameMode ||
                 turnState == TurnState::ChoosingCasualStrength || turnState == TurnState::ChoosingCasualColor ||
-                turnState == TurnState::ChoosingTsumegoProblem)
+                turnState == TurnState::ChoosingTsumegoRank)
             {
+            }
+            // 詰碁(17章)の問題選択中は、問題名の縦一列に載り切らないぶんをページで送る。
+            // 問題そのものの選択は盤中央のボタンで行うため、右側縦列はページ送りだけにする
+            else if (turnState == TurnState::ChoosingTsumegoProblem)
+            {
+                const int pageCount = tsumegoLevelIndices.empty() ? 1 :
+                    (static_cast<int>(tsumegoLevelIndices.size()) + kTsumegoProblemsPerPage - 1) /
+                    kTsumegoProblemsPerPage;
+                buttonSpecs.push_back({ ButtonId::TsumegoPrevPage, L"前のページ", tsumegoPageIndex > 0, false });
+                buttonSpecs.push_back({ ButtonId::TsumegoNextPage, L"次のページ",
+                    tsumegoPageIndex + 1 < pageCount, false });
             }
             // 詰碁(17章)は通常の対局ではないため、パス・投了・棋譜再生といった対局用の操作は
             // 出さず、「やり直す」と「問題を選ぶ」だけにする
             else if (turnState == TurnState::TsumegoPreparing || turnState == TurnState::TsumegoToMove ||
                 turnState == TurnState::TsumegoJudging || turnState == TurnState::TsumegoResult)
             {
-                // 解析中(基準値の測定中・判定中)はKataGoの解析チャンネルを取り合わないよう無効化する
+                // 解析中(基準値の測定中・判定中)はKataGoとの通信が進行中のため無効化する
                 const bool tsumegoIdle = turnState == TurnState::TsumegoToMove ||
                     turnState == TurnState::TsumegoResult;
                 buttonSpecs.push_back({ ButtonId::TsumegoRetry, L"やり直す", tsumegoIdle, false });
+                // 問題数が多いため、判定後は一覧へ戻らずに次の問題へ進めるようにする
+                // (進む先は同じ難易度の中の次の問題)
+                const auto nextFound = std::find(tsumegoLevelIndices.begin(), tsumegoLevelIndices.end(),
+                    currentTsumegoIndex);
+                const bool hasNextProblem = currentTsumegoIndex >= 0 &&
+                    nextFound != tsumegoLevelIndices.end() && (nextFound + 1) != tsumegoLevelIndices.end();
+                buttonSpecs.push_back({ ButtonId::TsumegoNextProblem, L"次の問題", tsumegoIdle && hasNextProblem, false });
                 buttonSpecs.push_back({ ButtonId::TsumegoBackToList, L"問題を選ぶ", tsumegoIdle, false });
             }
             else if (turnState == TurnState::ViewingMistakeStats)
@@ -2873,7 +2946,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         }
                         else
                         {
-                            turnState = TurnState::ChoosingTsumegoProblem;
+                            // まず難易度(段級位)を選び、その段の問題一覧へ進む
+                            turnState = TurnState::ChoosingTsumegoRank;
                         }
                         break;
                     default: break;
@@ -2902,10 +2976,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 hasBackButton = true;
                 backButtonRect = LayoutBoardBottomButton(ButtonId::BackToCasualStrength, layout);
             }
-            else if (turnState == TurnState::ChoosingTsumegoProblem)
+            else if (turnState == TurnState::ChoosingTsumegoRank)
             {
                 hasBackButton = true;
                 backButtonRect = LayoutBoardBottomButton(ButtonId::BackToGameMode, layout);
+            }
+            else if (turnState == TurnState::ChoosingTsumegoProblem)
+            {
+                hasBackButton = true;
+                backButtonRect = LayoutBoardBottomButton(ButtonId::BackToTsumegoRank, layout);
             }
             if (hasBackButton && mouseInWindow && clicked && !clickConsumed &&
                 IsPointInButton(backButtonRect, mouseWorldX, mouseWorldY))
@@ -2916,29 +2995,37 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                 case ButtonId::BackToBoardSize:      turnState = TurnState::ChoosingBoardSize; break;
                 case ButtonId::BackToGameMode:        turnState = TurnState::ChoosingGameMode; break;
                 case ButtonId::BackToCasualStrength:  turnState = TurnState::ChoosingCasualStrength; break;
+                case ButtonId::BackToTsumegoRank:     turnState = TurnState::ChoosingTsumegoRank; break;
                 default: break;
                 }
             }
 
             // カジュアル対局の強さ選択(11.6節)。盤中央に3個の範囲タブと、現在のタブに応じた
             // 段級位ボタンのグリッド(20〜11級・10〜1級は10個、1〜9段は9個)を表示する
+            // 詰碁の難易度選択(17章)もまったく同じタブ+グリッドで段級位を選ぶ。
+            // 「その段級位の人が解ける問題」という意味づけのため、カジュアルの強さ選択と
+            // 同じ見た目・同じ並びにしている(2つの画面が同時に出ることはない)
             std::vector<ButtonSpec> casualTabSpecs;
             std::vector<ButtonSpec> casualSlotSpecs;
-            if (turnState == TurnState::ChoosingCasualStrength)
+            if (turnState == TurnState::ChoosingCasualStrength || turnState == TurnState::ChoosingTsumegoRank)
             {
+                const bool forTsumego = turnState == TurnState::ChoosingTsumegoRank;
+                const int activeGroup = forTsumego ? tsumegoRankGroup : casualStrengthGroup;
                 static const wchar_t* kTabLabels[3] = { L"20〜11級", L"10〜1級", L"1〜9段" };
                 for (int group = 0; group < 3; ++group)
                 {
                     casualTabSpecs.push_back({ CasualTabButtonId(group), kTabLabels[group],
-                        true, casualStrengthGroup == group });
+                        true, activeGroup == group });
                 }
 
-                const int slotCount = (casualStrengthGroup == 2) ? 9 : 10;
+                const int slotCount = (activeGroup == 2) ? 9 : 10;
                 for (int slot = 0; slot < slotCount; ++slot)
                 {
-                    const int rankIndex = RankIndexForCasualSlot(casualStrengthGroup, slot);
+                    const int rankIndex = RankIndexForCasualSlot(activeGroup, slot);
+                    // 詰碁では、その段級位の問題が1問も無いマスは押せないようにする
+                    const bool enabled = !forTsumego || tsumegoProblemCountForRank(rankIndex) > 0;
                     casualSlotSpecs.push_back({ CasualSlotButtonId(slot),
-                        DisplayRankTextForRankIndex(rankIndex), true, false });
+                        DisplayRankTextForRankIndex(rankIndex), enabled, false });
                 }
             }
             const std::vector<ButtonRect> casualTabRects = LayoutCasualGroupTabs(casualTabSpecs, layout);
@@ -2951,32 +3038,46 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             };
             const ButtonStyle casualGridStyle{ kCasualGridFontSize, kCasualGridCornerRadius };
 
-            if (mouseInWindow && clicked && !clickConsumed && turnState == TurnState::ChoosingCasualStrength)
+            if (mouseInWindow && clicked && !clickConsumed &&
+                (turnState == TurnState::ChoosingCasualStrength || turnState == TurnState::ChoosingTsumegoRank))
             {
+                const bool forTsumego = turnState == TurnState::ChoosingTsumegoRank;
+                int& activeGroup = forTsumego ? tsumegoRankGroup : casualStrengthGroup;
                 for (const ButtonRect& button : casualTabRects)
                 {
                     if (button.Enabled && IsPointInButton(button, mouseWorldX, mouseWorldY))
                     {
                         clickConsumed = true;
-                        if (button.Id == ButtonId::CasualGroupKyu20To11)      casualStrengthGroup = 0;
-                        else if (button.Id == ButtonId::CasualGroupKyu10To1) casualStrengthGroup = 1;
-                        else if (button.Id == ButtonId::CasualGroupDan1To9) casualStrengthGroup = 2;
+                        if (button.Id == ButtonId::CasualGroupKyu20To11)      activeGroup = 0;
+                        else if (button.Id == ButtonId::CasualGroupKyu10To1) activeGroup = 1;
+                        else if (button.Id == ButtonId::CasualGroupDan1To9) activeGroup = 2;
                         break;
                     }
                 }
                 for (size_t i = 0; i < casualSlotRects.size(); ++i)
                 {
                     const ButtonRect& button = casualSlotRects[i];
-                    if (button.Enabled && IsPointInButton(button, mouseWorldX, mouseWorldY))
+                    if (!button.Enabled || !IsPointInButton(button, mouseWorldX, mouseWorldY))
                     {
-                        clickConsumed = true;
-                        const int rankIndex = RankIndexForCasualSlot(casualStrengthGroup, static_cast<int>(i));
+                        continue;
+                    }
+                    clickConsumed = true;
+                    const int rankIndex = RankIndexForCasualSlot(activeGroup, static_cast<int>(i));
+                    if (forTsumego)
+                    {
+                        // 選んだ段級位の問題一覧へ進む
+                        tsumegoRankIndex = rankIndex;
+                        rebuildTsumegoLevelIndices();
+                        turnState = TurnState::ChoosingTsumegoProblem;
+                    }
+                    else
+                    {
                         // 強さが決まった時点ではまだ対局を始めず、続けて手番(黒/白/ランダム)を
                         // 選んでもらう(14章参照)。目標レーティングは色が決まるまで保持しておく
                         pendingCasualTargetRating = RatingForRankIndex(static_cast<double>(rankIndex));
                         turnState = TurnState::ChoosingCasualColor;
-                        break;
                     }
+                    break;
                 }
             }
 
@@ -3018,14 +3119,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             // CasualRankSlot*を汎用のスロット番号として使い回す(どちらの用途かはturnStateで
             // 区別しており、同時に表示されることはない)
             std::vector<ButtonSpec> tsumegoSpecs;
+            const int tsumegoFirstOnPage = tsumegoPageIndex * kTsumegoProblemsPerPage;
             if (turnState == TurnState::ChoosingTsumegoProblem)
             {
-                const int shownCount =
-                    (std::min)(static_cast<int>(tsumegoProblems.size()), kMaxTsumegoProblemsShown);
+                const int shownCount = (std::min)(
+                    static_cast<int>(tsumegoLevelIndices.size()) - tsumegoFirstOnPage, kTsumegoProblemsPerPage);
                 for (int i = 0; i < shownCount; ++i)
                 {
+                    const int problemIndex = tsumegoLevelIndices[static_cast<size_t>(tsumegoFirstOnPage + i)];
                     tsumegoSpecs.push_back({ CasualSlotButtonId(i),
-                        Utf8ToWide(tsumegoProblems[static_cast<size_t>(i)].Title), true, false });
+                        Utf8ToWide(tsumegoProblems[static_cast<size_t>(problemIndex)].Title), true, false });
                 }
             }
             const std::vector<ButtonRect> tsumegoRects = LayoutBoardCenteredColumn(
@@ -3040,7 +3143,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         continue;
                     }
                     clickConsumed = true;
-                    beginTsumegoProblem(static_cast<int>(i));
+                    beginTsumegoProblem(tsumegoLevelIndices[static_cast<size_t>(tsumegoFirstOnPage + i)]);
                     break; // ボタンは重ならない配置のため、1個ヒットしたら以降は調べない
                 }
             }
@@ -3074,17 +3177,22 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                         turnState = statsReturnState;
                         break;
                     case ButtonId::TsumegoRetry:
-                        // KataGoを起動し直さず、打った1手だけを取り消して問題図へ戻す
+                        // KataGoを起動し直さず、打った手をすべて取り消して問題図へ戻す
+                        // (複数手の問題(17.6節)では白の応手も含めて複数手が積まれている)
                         if (currentTsumegoIndex >= 0)
                         {
                             const TsumegoProblem& problem =
                                 tsumegoProblems[static_cast<size_t>(currentTsumegoIndex)];
                             bool retryReady = true;
-                            if (!moveHistory.empty())
+                            // 正解手順を持つ問題はKataGoを使っていないため、盤面を戻すだけでよい
+                            if (!moveHistory.empty() && problem.Solution.empty())
                             {
                                 try
                                 {
-                                    kataGo.Undo();
+                                    for (size_t i = 0; i < moveHistory.size(); ++i)
+                                    {
+                                        kataGo.Undo();
+                                    }
                                 }
                                 catch (const std::exception& e)
                                 {
@@ -3104,8 +3212,36 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
                             }
                         }
                         break;
+                    case ButtonId::TsumegoNextProblem:
+                        // 次の問題はKataGoを起動し直して開き直す(問題図ごとに盤面を作り直すため)。
+                        // 進む先は同じ難易度の中の次の問題にする(難易度をまたがない)
+                        if (currentTsumegoIndex >= 0)
+                        {
+                            const auto found = std::find(tsumegoLevelIndices.begin(),
+                                tsumegoLevelIndices.end(), currentTsumegoIndex);
+                            if (found != tsumegoLevelIndices.end() && (found + 1) != tsumegoLevelIndices.end())
+                            {
+                                const int position =
+                                    static_cast<int>(std::distance(tsumegoLevelIndices.begin(), found)) + 1;
+                                beginTsumegoProblem(tsumegoLevelIndices[static_cast<size_t>(position)]);
+                                // 一覧へ戻ったときに、いま解いている問題が載っているページを開く
+                                tsumegoPageIndex = position / kTsumegoProblemsPerPage;
+                            }
+                        }
+                        break;
                     case ButtonId::TsumegoBackToList:
                         turnState = TurnState::ChoosingTsumegoProblem;
+                        break;
+                    case ButtonId::TsumegoPrevPage:
+                        tsumegoPageIndex = (std::max)(0, tsumegoPageIndex - 1);
+                        break;
+                    case ButtonId::TsumegoNextPage:
+                        if (!tsumegoLevelIndices.empty())
+                        {
+                            tsumegoPageIndex = (std::min)(
+                                (static_cast<int>(tsumegoLevelIndices.size()) - 1) / kTsumegoProblemsPerPage,
+                                tsumegoPageIndex + 1);
+                        }
                         break;
                     }
                     break; // ボタンは重ならない配置のため、1個ヒットしたら以降は調べない
@@ -3274,14 +3410,67 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 
             case TurnState::TsumegoToMove:
             {
-                // 詰碁(17章)は1手だけ打って判定する。合法手なら盤面とKataGo側へ反映し、
-                // 対象の白石が盤上から消えていればその時点で正解、そうでなければ
-                // 着手後の局面(白の手番)を解析して判定へ回す
+                // 詰碁(17章)の着手。
+                // 正解手順を持つ問題(同梱の100問。17.6節)は、その手順と突き合わせて即座に
+                // 判定し、白の応手も手順どおりに打つ。手順を持たない問題図(利用者が自分で
+                // 追加したもの)だけが、従来どおり1手打った時点でKataGoの死活判定へ回る
                 if (!clicked || clickConsumed || !isHovering || currentTsumegoIndex < 0)
                 {
                     break;
                 }
                 const TsumegoProblem& problem = tsumegoProblems[static_cast<size_t>(currentTsumegoIndex)];
+
+                if (!problem.Solution.empty())
+                {
+                    // 手順の中の「次に黒が打つべき手」を取り出す(手順は黒白交互)
+                    const size_t expectedIndex = static_cast<size_t>(tsumegoBlackMoveCount) * 2;
+                    if (expectedIndex >= problem.Solution.size())
+                    {
+                        break; // 手順を打ち切っている(通常ここには来ない)
+                    }
+                    const SgfMove& expected = problem.Solution[expectedIndex];
+                    if (hoverRow != expected.Row || hoverCol != expected.Col)
+                    {
+                        renderer.PlaySound(gameEndSound);
+                        tsumegoResultText = L"不正解です。正解は" +
+                            FormatVertex(expected.Row, expected.Col) + L"でした。";
+                        showBoardMessageWide(tsumegoResultText, L"詰碁");
+                        turnState = TurnState::TsumegoResult;
+                        break;
+                    }
+                    if (!board.TryPlay(expected.Row, expected.Col, Stone::Black))
+                    {
+                        break; // 手順が非合法になることは無い想定
+                    }
+                    renderer.PlaySound(stonePlaceSound);
+                    moveHistory.push_back({ Stone::Black, false, expected.Row, expected.Col });
+                    ++tsumegoBlackMoveCount;
+
+                    // 続けて白の応手を手順どおりに打つ(KataGoには問い合わせない。
+                    // 死んだ一団を守る価値が無いためgenmoveはパスを返してしまい、
+                    // 応手が盤に現れないため)
+                    const size_t replyIndex = expectedIndex + 1;
+                    if (replyIndex < problem.Solution.size())
+                    {
+                        const SgfMove& reply = problem.Solution[replyIndex];
+                        if (board.TryPlay(reply.Row, reply.Col, Stone::White))
+                        {
+                            moveHistory.push_back({ Stone::White, false, reply.Row, reply.Col });
+                        }
+                        break; // まだ黒の手が残っている
+                    }
+
+                    renderer.PlaySound(gameEndSound);
+                    // 眼形を欠く問題だけでなく、囲いの中の黒石との攻め合いや捨て石で
+                    // 取る問題も出題するため、「二眼を作れない」ではなく「生きられない」と表示する
+                    tsumegoResultText = (problem.BlackMoveCount() > 1)
+                        ? L"正解です。この手順で白は生きられません。"
+                        : L"正解です。この手で白は生きられません。";
+                    showBoardMessageWide(tsumegoResultText, L"詰碁");
+                    turnState = TurnState::TsumegoResult;
+                    break;
+                }
+
                 if (!board.TryPlay(hoverRow, hoverCol, Stone::Black))
                 {
                     break; // 非合法手(自殺手・コウ等)は無視して着手待ちを続ける
@@ -3289,6 +3478,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 
                 renderer.PlaySound(stonePlaceSound);
                 moveHistory.push_back({ Stone::Black, false, hoverRow, hoverCol });
+                ++tsumegoBlackMoveCount;
                 try
                 {
                     kataGo.PlayMove(Stone::Black, hoverRow, hoverCol);
@@ -3789,23 +3979,40 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             // 詰碁(17章)のHUD行。問題文は開始時の盤上メッセージで提示済みのため、ここには
             // 問題名と「いま何をする段階か」だけを短く出す(HUDは1行しかなく折り返さないため)
             std::wstring tsumegoStatus;
-            if (turnState == TurnState::ChoosingTsumegoProblem)
+            if (turnState == TurnState::ChoosingTsumegoRank)
             {
-                tsumegoStatus = L"詰碁: 問題を選んでください(いずれも黒先で、白の一団を取れるかを試します)";
+                tsumegoStatus = L"詰碁: 難易度を選んでください"
+                    L"(正解手順の長さで分けています。1手詰め=20級/2手詰め=15級/3手詰め=10級/"
+                    L"4手詰め=5級/5手詰め以上=段位)";
+            }
+            else if (turnState == TurnState::ChoosingTsumegoProblem)
+            {
+                const int pageCount = tsumegoLevelIndices.empty() ? 1 :
+                    (static_cast<int>(tsumegoLevelIndices.size()) + kTsumegoProblemsPerPage - 1) /
+                    kTsumegoProblemsPerPage;
+                tsumegoStatus = L"詰碁: 問題を選んでください(いずれも黒先で、白の一団を取れるかを試します)   " +
+                    DisplayRankTextForRankIndex(tsumegoRankIndex) + L" " +
+                    std::to_wstring(tsumegoLevelIndices.size()) + L"問  " +
+                    std::to_wstring(tsumegoPageIndex + 1) + L"/" + std::to_wstring(pageCount) + L"ページ";
             }
             else if ((turnState == TurnState::TsumegoPreparing || turnState == TurnState::TsumegoToMove ||
-                turnState == TurnState::TsumegoJudging || turnState == TurnState::TsumegoResult) &&
-                currentTsumegoIndex >= 0)
+                turnState == TurnState::TsumegoJudging ||
+                turnState == TurnState::TsumegoResult) && currentTsumegoIndex >= 0)
             {
-                tsumegoStatus = L"詰碁: " +
-                    Utf8ToWide(tsumegoProblems[static_cast<size_t>(currentTsumegoIndex)].Title);
+                const TsumegoProblem& hudProblem = tsumegoProblems[static_cast<size_t>(currentTsumegoIndex)];
+                tsumegoStatus = L"詰碁: " + Utf8ToWide(hudProblem.Title);
                 if (turnState == TurnState::TsumegoPreparing)
                 {
                     tsumegoStatus += L"   KataGoが問題図を確認中...";
                 }
                 else if (turnState == TurnState::TsumegoToMove)
                 {
-                    tsumegoStatus += L"   1手だけ打ってください";
+                    // 複数手の問題(17.6節)は、いま何手目かが分からないと打ち切れないため手数を出す
+                    const int totalMoves = hudProblem.BlackMoveCount();
+                    tsumegoStatus += (totalMoves <= 1)
+                        ? std::wstring(L"   1手だけ打ってください")
+                        : L"   黒" + std::to_wstring(totalMoves) + L"手の手順です(" +
+                          std::to_wstring(tsumegoBlackMoveCount + 1) + L"手目)";
                 }
                 else if (turnState == TurnState::TsumegoJudging)
                 {
@@ -3953,6 +4160,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
             }
 
             // 詰碁(17章)の問題選択。盤中央の縦一列ボタンを描画する
+            // (難易度(段級位)の選択は、上のカジュアル強さ選択と同じタブ+グリッドで描いている)
             for (size_t i = 0; i < tsumegoRects.size(); ++i)
             {
                 const bool isButtonHovered = mouseInWindow && IsPointInButton(tsumegoRects[i], mouseWorldX, mouseWorldY);
